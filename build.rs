@@ -14,6 +14,7 @@ fn main() {
             .parent()
             .and_then(|p| p.parent())
             .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         
         let dll_src = PathBuf::from("wintun.dll");
