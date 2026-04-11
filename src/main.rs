@@ -102,20 +102,24 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("启动 xTune TUN 网络适配器...");
+    println!("\n╔════════════════════════════════════════════════════════════════╗");
+    println!("║                   🚀 xTune TUN 网络适配器                     ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
     
     #[cfg(target_os = "linux")]
-    println!("平台: Linux");
+    println!("📍 平台: Linux");
     
     #[cfg(target_os = "windows")]
-    println!("平台: Windows");
+    println!("📍 平台: Windows");
     
     #[cfg(target_os = "macos")]
-    println!("平台: macOS");
+    println!("📍 平台: macOS");
+    
+    println!();
     
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
-        eprintln!("不支持的操作系统");
+        eprintln!("❌ 不支持的操作系统");
         return Err("Unsupported OS".into());
     }
     
