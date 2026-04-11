@@ -50,10 +50,14 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
     log_message("开始加载 WinTun...");
     
     // 检查 DLL 文件是否存在
-    let dll_exists = std::path::Path::new("wintun.dll").exists()
-        || std::path::Path::new("C:\\Windows\\System32\\wintun.dll").exists();
+    let dll_in_root = std::path::Path::new("wintun.dll").exists();
+    let dll_in_system32 = std::path::Path::new("C:\\Windows\\System32\\wintun.dll").exists();
     
-    if !dll_exists {
+    log_message(&format!("  根目录中的 DLL: {}", if dll_in_root { "✓ 找到" } else { "✗ 未找到" }));
+    log_message(&format!("  System32 中的 DLL: {}", if dll_in_system32 { "✓ 找到" } else { "✗ 未找到" }));
+    
+    if !dll_in_root && !dll_in_system32 {
+        log_message("");
         log_message("⚠️  wintun.dll 未找到，进入演示模式");
         log_message("");
         log_message("【演示模式】");
@@ -67,6 +71,8 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
             let _ = io::stderr().flush();
         }
     }
+    
+    log_message("尝试加载 wintun.dll...");
     
     match unsafe { wintun::load() } {
         Ok(wintun) => {
@@ -107,18 +113,17 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
             log_message(&err_msg);
             log_message("");
             log_message("【可能的原因】");
-            log_message("1. wintun.dll 架构不匹配（32位 vs 64位）");
-            log_message("2. wintun.dll 损坏或不完整");
-            log_message("3. 缺少系统依赖");
+            log_message("1. DLL 文件损坏或不完整");
+            log_message("2. DLL 缺少系统依赖（如 VC++ 运行库）");
+            log_message("3. DLL 与 wintun crate 版本不兼容");
+            log_message("4. 权限不足（需要以管理员身份运行）");
             log_message("");
-            log_message("【解决方案】");
-            log_message("方案 A: 重新下载 WinTun x64 版本");
-            log_message("  下载链接: https://www.wintun.net/");
-            log_message("  确保是 x64 版本，不是 x86");
-            log_message("");
-            log_message("方案 B: 进入演示模式（不需要 DLL）");
-            log_message("  删除或重命名 wintun.dll 文件");
-            log_message("  程序会进入演示模式运行");
+            log_message("【建议解决方案】");
+            log_message("1. 尝试将 DLL 放在 C:\\Windows\\System32\\");
+            log_message("2. 安装 VC++ 可再发行包：");
+            log_message("   https://support.microsoft.com/en-us/help/2977003");
+            log_message("3. 以管理员身份运行此程序");
+            log_message("4. 重新下载最新的 wintun.dll");
             log_message("");
             return Err(Box::new(e));
         }
