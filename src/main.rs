@@ -49,6 +49,25 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
 fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
     log_message("开始加载 WinTun...");
     
+    // 检查 DLL 文件是否存在
+    let dll_exists = std::path::Path::new("wintun.dll").exists()
+        || std::path::Path::new("C:\\Windows\\System32\\wintun.dll").exists();
+    
+    if !dll_exists {
+        log_message("⚠️  wintun.dll 未找到，进入演示模式");
+        log_message("");
+        log_message("【演示模式】");
+        log_message("正在模拟 TUN 网络适配器运行...");
+        log_message("（实际工作需要安装真实的 wintun.dll）");
+        log_message("");
+        
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            eprintln!("✓ 模拟 TUN 适配器正在运行 (xtun)");
+            let _ = io::stderr().flush();
+        }
+    }
+    
     match unsafe { wintun::load() } {
         Ok(wintun) => {
             log_message("✓ WinTun 库已加载");
@@ -87,10 +106,19 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
             let err_msg = format!("✗ 加载 WinTun 失败: {}", e);
             log_message(&err_msg);
             log_message("");
+            log_message("【可能的原因】");
+            log_message("1. wintun.dll 架构不匹配（32位 vs 64位）");
+            log_message("2. wintun.dll 损坏或不完整");
+            log_message("3. 缺少系统依赖");
+            log_message("");
             log_message("【解决方案】");
-            log_message("1. 确保 wintun.dll 在项目根目录或 C:\\Windows\\System32\\");
-            log_message("2. 需要以管理员身份运行此程序");
-            log_message("3. 确保 DLL 是正确的架构（x86_64）");
+            log_message("方案 A: 重新下载 WinTun x64 版本");
+            log_message("  下载链接: https://www.wintun.net/");
+            log_message("  确保是 x64 版本，不是 x86");
+            log_message("");
+            log_message("方案 B: 进入演示模式（不需要 DLL）");
+            log_message("  删除或重命名 wintun.dll 文件");
+            log_message("  程序会进入演示模式运行");
             log_message("");
             return Err(Box::new(e));
         }
