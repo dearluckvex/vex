@@ -1,49 +1,51 @@
 use std::env;
 use std::path::PathBuf;
+use std::fs;
 
 fn main() {
     #[cfg(target_os = "windows")]
     {
-        // 使用 CARGO_MANIFEST_DIR 获取项目根目录（更可靠）
-        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR")
+            .unwrap_or_else(|_| ".".to_string());
+        
         let dll_src = PathBuf::from(&manifest_dir).join("wintun.dll");
         
         if dll_src.exists() {
-            // 获取构建输出目录
             let out_dir = env::var("OUT_DIR").unwrap();
+            let profile = env::var("PROFILE")
+                .unwrap_or_else(|_| "debug".to_string());
+            
+            // 直接计算目标目录
+            // OUT_DIR 通常是: target/profile/deps/xxx-hash
+            // 我们需要: target/profile
             let out_path = PathBuf::from(&out_dir);
-            let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-            
-            // 构建目录
-            let target_dir = out_path
-                .parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
+            let target_root = out_path
+                .parent()  // deps
+                .and_then(|p| p.parent())  // profile (debug/release)
                 .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(&manifest_dir));
+                .unwrap_or_else(|| PathBuf::from(&manifest_dir).join("target").join(&profile));
             
-            let dll_dest = target_dir.join(&profile).join("wintun.dll");
+            let dll_dest = target_root.join("wintun.dll");
             
-            // 确保目标目录存在
+            // 创建目标目录
             if let Some(parent) = dll_dest.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                let _ = fs::create_dir_all(parent);
             }
             
-            // 复制到输出目录
-            match std::fs::copy(&dll_src, &dll_dest) {
-                Ok(_) => println!("cargo:warning=✓ 已复制 wintun.dll -> target/{}", profile),
-                Err(e) => println!("cargo:warning=✗ 复制 wintun.dll 失败: {}", e),
+            // 复制 DLL
+            match fs::copy(&dll_src, &dll_dest) {
+                Ok(_) => {
+                    eprintln!("✓ 已复制 wintun.dll 到 {}", dll_dest.display());
+                    println!("cargo:warning=✓ 已复制 wintun.dll");
+                }
+                Err(e) => {
+                    eprintln!("✗ 复制 wintun.dll 失败: {}", e);
+                    println!("cargo:warning=✗ 复制 wintun.dll 失败: {}", e);
+                }
             }
             
-            // 告诉 cargo 依赖 DLL
             println!("cargo:rerun-if-changed={}", dll_src.display());
-        } else {
-            println!("cargo:warning=✓ wintun.dll 将从 System32 加载");
         }
     }
-    
-    // 非 Windows 平台什么都不做
-    #[cfg(not(target_os = "windows"))]
-    {}
 }
 
