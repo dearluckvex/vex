@@ -1,7 +1,11 @@
 pub mod connector;
+pub mod factory;
 pub mod http;
 pub mod service;
 pub mod socks5;
+pub mod transport;
+pub mod trojan;
+pub mod vless;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

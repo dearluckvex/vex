@@ -20,6 +20,11 @@ urlencoding = { workspace = true }
 uuid = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

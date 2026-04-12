@@ -18,4 +18,7 @@ pub use proxy::connector::{Outbound, DirectOutbound, SharedOutbound, BoxProxyStr
 pub use proxy::service::ProxyService;
 pub use proxy::socks5::Socks5Server;
 pub use proxy::http::HttpProxyServer;
+pub use proxy::vless::VlessOutbound;
+pub use proxy::trojan::TrojanOutbound;
+pub use proxy::factory::create_outbound;
 
