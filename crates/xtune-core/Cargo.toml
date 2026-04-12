@@ -16,6 +16,7 @@ log = { workspace = true }
 tracing = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
+urlencoding = { workspace = true }
 uuid = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
