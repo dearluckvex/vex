@@ -1,6 +1,6 @@
 # xTune - 跨平台 TUN 网络适配器
 
-一个使用 Rust 编写的跨平台 TUN（不成对的 TUN）网络适配器，支持 Linux、Windows 和 macOS。
+一个使用 Rust 编写的跨平台 TUN（不成对的 TUN）网络适配器和代理框架，支持 Linux、Windows 和 macOS。
 
 ## 功能特性
 
@@ -12,6 +12,14 @@
 ✅ **条件编译**
 - 每个平台使用最合适的网络库
 - 自动编译对应平台的代码
+
+✅ **代理功能**（新增）
+- IP 数据包解析和识别
+- TCP/UDP 协议检测
+- 连接追踪和统计
+- 异步数据转发框架
+- 流量统计和监控
+- 详细的连接日志
 
 ## 编译要求
 
@@ -209,6 +217,43 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
 ## 许可证
 
 MIT License
+
+## 项目架构
+
+### 模块设计
+
+```
+src/
+├── main.rs               # 应用入口（平台特定逻辑）
+├── packet/
+│   ├── mod.rs            # IP/TCP/UDP 数据包解析
+│   └── tests.rs          # 数据包解析单元测试
+└── proxy/
+    ├── mod.rs            # 核心代理逻辑和统计
+    ├── tcp.rs            # TCP 双向转发器
+    └── udp.rs            # UDP 转发器
+```
+
+### 数据流
+
+```
+TUN 设备
+   ↓
+读取原始数据包 (IP layer)
+   ↓
+packet::IpPacket::parse()  [解析 IP/TCP/UDP]
+   ↓
+proxy::PacketProxy::process_packet()
+   ├─→ TCP 流 → proxy::tcp::TcpForwarder
+   ├─→ UDP 流 → proxy::udp::UdpForwarder
+   └─→ 其他   → 日志记录
+   ↓
+统计和监控
+```
+
+## 功能模块说明
+
+更详细的功能说明请参考 [PROXY_FEATURES.md](./PROXY_FEATURES.md)
 
 ## 贡献
 
