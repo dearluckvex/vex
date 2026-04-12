@@ -13,3 +13,9 @@ pub use config::v2ray::{
 };
 pub use config::subscription::{fetch_subscription, parse_subscription_content, detect_format};
 
+pub use proxy::{ProxyState, ProxyStats};
+pub use proxy::connector::{Outbound, DirectOutbound, SharedOutbound, BoxProxyStream, ProxyStream};
+pub use proxy::service::ProxyService;
+pub use proxy::socks5::Socks5Server;
+pub use proxy::http::HttpProxyServer;
+

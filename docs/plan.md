@@ -15,20 +15,21 @@ XTune 是一款基于 Rust 的跨平台代理/VPN 客户端，支持 TUIC v5、S
 
 ## 分阶段实现计划
 
-### Phase 1: 项目脚手架 + 基础架构 ⬅️ 当前阶段
+### Phase 1: 项目脚手架 + 基础架构 ✅ 已完成
 - 建立 Cargo workspace 和各 crate 骨架
 - 配置 gpui + gpui-component 依赖
 - 实现最基本的 GPUI 窗口
 - 定义核心数据结构 (Node, Config, ProxyProtocol 等)
 
-### Phase 2: 配置系统
+### Phase 2: 配置系统 ✅ 已完成
 - 定义统一的内部配置模型
 - 实现 Clash YAML 配置解析
 - 实现 V2Ray JSON 配置解析
 - 实现订阅 URL 获取与解码 (Base64/JSON)
 - 支持 Karing 订阅格式导入
+- 17 个单元测试全部通过
 
-### Phase 3: 本地代理服务
+### Phase 3: 本地代理服务 ⬅️ 当前阶段
 - 实现 SOCKS5 本地代理服务器
 - 实现 HTTP 本地代理服务器
 - 连接管理与生命周期
