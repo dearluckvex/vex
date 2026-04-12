@@ -83,3 +83,18 @@ impl IpPacket {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+impl PartialEq for Protocol {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Protocol::Tcp, Protocol::Tcp) => true,
+            (Protocol::Udp, Protocol::Udp) => true,
+            (Protocol::Other(a), Protocol::Other(b)) => a == b,
+            _ => false,
+        }
+    }
+}
