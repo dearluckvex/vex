@@ -67,11 +67,15 @@ impl PacketProxy {
     }
     
     async fn handle_udp(&self, packet: IpPacket) {
-        let conn_key = packet.connection_key();
-        
         match packet.dst_port {
             Some(53) => {
-                log::debug!("[DNS] Query from {} to port 53", packet.src_ip);
+                // DNS 查询处理
+                if let Some(dns_packet) = crate::dns::parser::DnsPacket::parse(&packet.payload) {
+                    if let Some(domain) = dns_packet.get_first_domain() {
+                        log::info!("[DNS] Query: {} -> {} (ID: {})", 
+                            packet.src_ip, domain, dns_packet.id);
+                    }
+                }
             }
             Some(port) => {
                 log::debug!("[UDP] {} -> port {}", packet.src_ip, port);

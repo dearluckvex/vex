@@ -3,6 +3,7 @@ use std::fs::OpenOptions;
 
 mod packet;
 mod proxy;
+mod dns;
 
 use packet::IpPacket;
 use proxy::PacketProxy;
