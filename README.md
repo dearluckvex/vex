@@ -13,13 +13,21 @@
 - 每个平台使用最合适的网络库
 - 自动编译对应平台的代码
 
-✅ **代理功能**（新增）
+✅ **代理功能**
 - IP 数据包解析和识别
 - TCP/UDP 协议检测
 - 连接追踪和统计
 - 异步数据转发框架
 - 流量统计和监控
 - 详细的连接日志
+
+✅ **DNS 拦截** （新增）
+- DNS 查询识别和解析
+- 规则引擎（支持通配符）
+- 域名重定向
+- 查询阻止
+- 详细的查询日志
+- 支持自定义规则
 
 ## 编译要求
 
@@ -232,6 +240,9 @@ src/
     ├── mod.rs            # 核心代理逻辑和统计
     ├── tcp.rs            # TCP 双向转发器
     └── udp.rs            # UDP 转发器
+└── dns/
+    ├── mod.rs            # DNS 规则引擎
+    └── parser.rs         # DNS 数据包解析
 ```
 
 ### 数据流
@@ -245,15 +256,23 @@ packet::IpPacket::parse()  [解析 IP/TCP/UDP]
    ↓
 proxy::PacketProxy::process_packet()
    ├─→ TCP 流 → proxy::tcp::TcpForwarder
-   ├─→ UDP 流 → proxy::udp::UdpForwarder
-   └─→ 其他   → 日志记录
+   ├─→ UDP 流:
+   │   └─→ 端口 53 (DNS)
+   │       ├→ dns::parser::DnsPacket::parse()
+   │       ├→ dns::DnsRuleEngine::match_rule()
+   │       └→ [Redirect/Block/Pass]
+   │   └─→ 其他端口 → proxy::udp::UdpForwarder
+   └─→ 其他协议 → 日志记录
    ↓
 统计和监控
 ```
 
 ## 功能模块说明
 
-更详细的功能说明请参考 [PROXY_FEATURES.md](./PROXY_FEATURES.md)
+详细的功能说明请参考：
+- [PROXY_FEATURES.md](./PROXY_FEATURES.md) - 代理功能详解
+- [DNS_FEATURES.md](./DNS_FEATURES.md) - DNS 拦截功能详解
+- [QUICKSTART.md](./QUICKSTART.md) - 5分钟快速开始
 
 ## 贡献
 
