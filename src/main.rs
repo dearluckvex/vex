@@ -4,9 +4,11 @@ use std::fs::OpenOptions;
 mod packet;
 mod proxy;
 mod dns;
+mod utils;
 
 use packet::IpPacket;
 use proxy::PacketProxy;
+use utils::{format_hex_dump, print_packet_info};
 
 #[cfg(target_os = "linux")]
 use tun2::{Configuration, Device};
@@ -50,11 +52,38 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
             let result = rt.block_on(async {
                 let proxy = PacketProxy::new();
                 let mut buf = [0u8; 1500];
+                let mut packet_count = 0;
                 
                 loop {
                     match dev.read(&mut buf) {
                         Ok(n) => {
+                            packet_count += 1;
+                            
+                            // 打印原始数据包（仅前 5 个包或偶数包）
+                            if packet_count <= 5 || packet_count % 100 == 0 {
+                                log_message(&format!("\n[数据包 #{}] 接收到 {} 字节:", packet_count, n));
+                                
+                                // 打印十六进制转储
+                                let hex_dump = format_hex_dump(&buf[..n], 8);
+                                for line in hex_dump.lines() {
+                                    log_message(&format!("  {}", line));
+                                }
+                            }
+                            
                             if let Some(packet) = IpPacket::parse(&buf[..n]) {
+                                // 打印解析的数据包信息
+                                log_message(&format!(
+                                    "  ✓ 解析成功: {} -> {} (协议: {:?})",
+                                    packet.src_ip, packet.dst_ip, packet.protocol
+                                ));
+                                
+                                if let (Some(src_port), Some(dst_port)) = (packet.src_port, packet.dst_port) {
+                                    log_message(&format!(
+                                        "    端口: {}:{} -> {}:{}",
+                                        packet.src_ip, src_port, packet.dst_ip, dst_port
+                                    ));
+                                }
+                                
                                 proxy.process_packet(packet).await;
                                 
                                 let stats = proxy.get_stats().await;
@@ -64,6 +93,8 @@ fn create_tun_device() -> Result<(), Box<dyn std::error::Error>> {
                                         stats.packets_received, stats.bytes_received
                                     ));
                                 }
+                            } else {
+                                log_message("  ⚠️  无法解析数据包");
                             }
                         }
                         Err(e) => {
