@@ -35,19 +35,22 @@ XTune 是一款基于 Rust 的跨平台代理/VPN 客户端，支持 TUIC v5、S
 - 连接管理与生命周期
 - 系统代理设置（无需管理员权限）
 
-### Phase 4: 远程协议实现
-- Shadowsocks 客户端（使用 shadowsocks crate）
-- VMess AEAD 客户端
+### Phase 4: 远程协议实现 ✅ 已完成
+- TLS 传输层（rustls + insecure verifier）
+- Shadowsocks 客户端（shadowsocks crate, AEAD + AEAD-2022）
 - VLESS 客户端
-- TUIC v5 客户端（基于 quinn QUIC）
-- TLS / WebSocket 传输层
+- Trojan 客户端
+- Node→Outbound 工厂函数
+- VMess/TUIC/Hysteria2：桩实现（fallback DirectOutbound）
 
-### Phase 5: GUI 功能完善
-- 侧边栏导航布局
-- 节点列表视图（延迟测试 / 选择）
-- 配置导入界面（URL 输入 / 文件导入）
-- 连接状态面板
-- 流量统计
+### Phase 5: GUI 功能完善 ✅ 已完成
+- 侧边栏导航布局（Home/Nodes/Config/Settings）
+- 节点列表视图（协议标签、延迟测试、选择指示器）
+- 配置导入界面（订阅URL输入、自动格式检测）
+- 连接状态面板（开始/停止、状态指示、端点展示）
+- 流量统计（活跃连接、总连接数）
+- 设置面板（监听地址、SOCKS5/HTTP端口）
+- Tokio运行时桥接（GUI异步控制代理服务）
 
 ### Phase 6: 高级功能
 - 规则路由引擎（域名 / IP / GeoIP）

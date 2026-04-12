@@ -1,6 +1,7 @@
 pub mod connector;
 pub mod factory;
 pub mod http;
+pub mod routing;
 pub mod service;
 pub mod socks5;
 pub mod ss;

@@ -22,4 +22,7 @@ pub use proxy::vless::VlessOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::ss::SsOutbound;
 pub use proxy::factory::create_outbound;
+pub use proxy::routing::RoutingOutbound;
+
+pub use router::{Router, RouteAction, MatchRule, RuleSet, GeoIpDb};
 

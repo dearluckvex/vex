@@ -1,1 +1,5 @@
-// Rule-based routing engine - to be implemented in Phase 6
+mod engine;
+mod geoip;
+
+pub use engine::{RouteAction, Router, MatchRule, RuleSet};
+pub use geoip::GeoIpDb;
