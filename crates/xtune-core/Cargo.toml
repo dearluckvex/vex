@@ -25,6 +25,10 @@ tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+md-5 = { workspace = true }
+hmac = { workspace = true }
+aes-gcm = { workspace = true }
+chacha20poly1305 = { workspace = true }
 shadowsocks = { workspace = true }
 
 [dev-dependencies]

@@ -21,6 +21,7 @@ pub use proxy::http::HttpProxyServer;
 pub use proxy::vless::VlessOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::ss::SsOutbound;
+pub use proxy::vmess::VMessOutbound;
 pub use proxy::factory::create_outbound;
 pub use proxy::routing::RoutingOutbound;
 

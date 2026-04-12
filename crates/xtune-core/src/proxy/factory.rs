@@ -8,6 +8,7 @@ use super::connector::{DirectOutbound, SharedOutbound};
 use super::ss::{SsOutbound, normalize_ss_cipher};
 use super::trojan::TrojanOutbound;
 use super::vless::VlessOutbound;
+use super::vmess::VMessOutbound;
 
 /// Create an outbound connector from a Node configuration.
 pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
@@ -45,13 +46,14 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
         }
 
         ProxyProtocol::VMess { uuid, cipher, .. } => {
-            // TODO: Phase 4b - implement VMess AEAD outbound
-            tracing::warn!(
-                "VMess outbound not yet implemented (uuid={}, cipher={}), using direct",
+            let outbound = VMessOutbound::new(
+                &node.server,
+                node.port,
                 uuid,
-                cipher
-            );
-            Ok(SharedOutbound(Arc::new(DirectOutbound)))
+                cipher,
+                node.transport.as_ref(),
+            )?;
+            Ok(SharedOutbound(Arc::new(outbound)))
         }
 
         ProxyProtocol::Tuic { uuid, .. } => {

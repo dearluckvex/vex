@@ -8,6 +8,7 @@ pub mod ss;
 pub mod transport;
 pub mod trojan;
 pub mod vless;
+pub mod vmess;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
