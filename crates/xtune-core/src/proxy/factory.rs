@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::config::model::{Node, ProxyProtocol};
 
 use super::connector::{DirectOutbound, SharedOutbound};
+use super::ss::{SsOutbound, normalize_ss_cipher};
 use super::trojan::TrojanOutbound;
 use super::vless::VlessOutbound;
 
@@ -33,13 +34,14 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
         }
 
         ProxyProtocol::Shadowsocks { cipher, password, .. } => {
-            // TODO: Phase 4b - implement Shadowsocks outbound
-            tracing::warn!(
-                "Shadowsocks outbound not yet implemented (cipher={}), using direct",
-                cipher
-            );
-            let _ = password;
-            Ok(SharedOutbound(Arc::new(DirectOutbound)))
+            let normalized_cipher = normalize_ss_cipher(cipher);
+            let outbound = SsOutbound::new(
+                &node.server,
+                node.port,
+                normalized_cipher,
+                password,
+            )?;
+            Ok(SharedOutbound(Arc::new(outbound)))
         }
 
         ProxyProtocol::VMess { uuid, cipher, .. } => {
@@ -137,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_ss_outbound_fallback() {
+    fn test_create_ss_outbound() {
         let node = Node {
             name: "test-ss".to_string(),
             server: "ss.server.com".to_string(),
@@ -152,8 +154,7 @@ mod tests {
             extra: Default::default(),
         };
 
-        // Falls back to direct until SS is implemented
         let outbound = create_outbound(&node).unwrap();
-        assert_eq!(outbound.0.name(), "direct");
+        assert_eq!(outbound.0.name(), "shadowsocks");
     }
 }

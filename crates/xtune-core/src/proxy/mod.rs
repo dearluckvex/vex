@@ -3,6 +3,7 @@ pub mod factory;
 pub mod http;
 pub mod service;
 pub mod socks5;
+pub mod ss;
 pub mod transport;
 pub mod trojan;
 pub mod vless;
