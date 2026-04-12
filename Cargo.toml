@@ -1,23 +1,50 @@
-[package]
-name = "xtune"
+[workspace]
+members = [
+    "crates/xtune-core",
+    "crates/xtune-gui",
+    "crates/xtune-cli",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
-edition = "2021"
-build = "build.rs"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["XTune Contributors"]
 
-[dependencies]
-tokio = { version = "1.44.0", features = ["full"] }
-pnet = "0.34"
-pnet_packet = "0.34"
-bytes = "1.5"
+[workspace.dependencies]
+# Internal crates
+xtune-core = { path = "crates/xtune-core" }
+
+# GPUI
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Networking
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+
+# Crypto & proxy
+shadowsocks = { version = "1", features = ["aead-cipher-2022"] }
+quinn = "0.11"
+rustls = "0.23"
+tokio-rustls = "0.26"
+
+# Utils
+anyhow = "1"
+thiserror = "2"
 log = "0.4"
-env_logger = "0.10"
-clap = { version = "4.4", features = ["derive"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-tun2 = "4.0.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-wintun = "0.5"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-tun = "0.6"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+base64 = "0.22"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+bytes = "1"
+rand = "0.9"

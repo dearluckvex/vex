@@ -1,0 +1,17 @@
+[package]
+name = "xtune-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "xtune-cli"
+path = "src/main.rs"
+
+[dependencies]
+xtune-core = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_yaml = { workspace = true }

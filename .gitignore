@@ -1,4 +1,7 @@
 /target
+Cargo.lock
+*.log
 *.dll
 *.so
 *.dylib
+Cargo.lock
