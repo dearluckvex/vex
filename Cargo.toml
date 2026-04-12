@@ -6,6 +6,11 @@ build = "build.rs"
 
 [dependencies]
 tokio = { version = "1.44.0", features = ["full"] }
+pnet = "0.34"
+pnet_packet = "0.34"
+bytes = "1.5"
+log = "0.4"
+env_logger = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tun2 = "4.0.0"
