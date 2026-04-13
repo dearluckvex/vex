@@ -5,7 +5,11 @@ use gpui_component::tag::{Tag, TagVariant};
 
 use xtune_core::config::model::{Node, ProxyProtocol, Subscription};
 use xtune_core::proxy::ProxyStats;
-use xtune_core::{ProxyService, SharedOutbound, create_outbound, fetch_subscription};
+use xtune_core::{
+    ProxyService, SharedOutbound, clear_system_proxy as clear_os_proxy,
+    create_outbound, fetch_subscription, get_system_proxy as get_os_proxy,
+    set_system_proxy as set_os_proxy, system_proxy_supported,
+};
 
 // Color palette
 const BG_PRIMARY: u32 = 0x1a1a2e;
@@ -46,6 +50,8 @@ pub struct AppState {
     listen_addr: String,
     socks_port: u16,
     http_port: u16,
+    system_proxy_enabled: bool,
+    system_proxy_status: String,
 
     // Proxy stats
     proxy_stats: Option<ProxyStats>,
@@ -63,6 +69,21 @@ pub enum ActiveView {
     Nodes,
     Config,
     Settings,
+}
+
+fn current_system_proxy_state() -> (bool, String) {
+    if !system_proxy_supported() {
+        return (false, "Unsupported on this platform".to_string());
+    }
+
+    match get_os_proxy() {
+        Ok(proxy) if proxy.enabled => (
+            true,
+            format!("Enabled: {}:{} (bypass: {})", proxy.host, proxy.port, proxy.bypass),
+        ),
+        Ok(_) => (false, "Disabled".to_string()),
+        Err(err) => (false, format!("Error: {}", err)),
+    }
 }
 
 impl AppState {
@@ -89,6 +110,7 @@ impl AppState {
                 .placeholder("1087")
                 .default_value("1087")
         });
+        let (system_proxy_enabled, system_proxy_status) = current_system_proxy_state();
 
         Self {
             active_view: ActiveView::Home,
@@ -104,6 +126,8 @@ impl AppState {
             listen_addr: "127.0.0.1".to_string(),
             socks_port: 1080,
             http_port: 1087,
+            system_proxy_enabled,
+            system_proxy_status,
             proxy_stats: None,
             tokio_handle,
             proxy_stop_tx: None,
@@ -326,6 +350,36 @@ impl AppState {
         if let Ok(p) = http.parse::<u16>() {
             self.http_port = p;
         }
+        cx.notify();
+    }
+
+    fn enable_system_proxy(&mut self, cx: &mut Context<Self>) {
+        match set_os_proxy(&self.listen_addr, self.socks_port) {
+            Ok(()) => self.refresh_system_proxy_status(None, cx),
+            Err(err) => self.refresh_system_proxy_status(Some(err.to_string()), cx),
+        }
+    }
+
+    fn disable_system_proxy(&mut self, cx: &mut Context<Self>) {
+        match clear_os_proxy() {
+            Ok(()) => self.refresh_system_proxy_status(None, cx),
+            Err(err) => self.refresh_system_proxy_status(Some(err.to_string()), cx),
+        }
+    }
+
+    fn refresh_system_proxy_status(
+        &mut self,
+        fallback_error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let (enabled, status) = if let Some(msg) = fallback_error {
+            (false, format!("Error: {msg}"))
+        } else {
+            current_system_proxy_state()
+        };
+
+        self.system_proxy_enabled = enabled;
+        self.system_proxy_status = status;
         cx.notify();
     }
 
@@ -1067,6 +1121,41 @@ impl AppState {
                                         self.socks_port,
                                         self.listen_addr,
                                         self.http_port
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("enable-system-proxy")
+                                            .label(if self.system_proxy_enabled {
+                                                "🔄 Update System Proxy".to_string()
+                                            } else {
+                                                "🌐 Set System Proxy".to_string()
+                                            })
+                                            .primary()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.enable_system_proxy(cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("disable-system-proxy")
+                                            .label("🧹 Clear System Proxy".to_string())
+                                            .ghost()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.disable_system_proxy(cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_SECONDARY))
+                                    .child(format!(
+                                        "System Proxy: {}",
+                                        self.system_proxy_status
                                     )),
                             ),
                     ),

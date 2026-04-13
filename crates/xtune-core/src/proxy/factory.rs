@@ -7,6 +7,7 @@ use crate::config::model::{Node, ProxyProtocol};
 use super::connector::{DirectOutbound, SharedOutbound};
 use super::ss::{SsOutbound, normalize_ss_cipher};
 use super::trojan::TrojanOutbound;
+use super::tuic::TuicOutbound;
 use super::vless::VlessOutbound;
 use super::vmess::VMessOutbound;
 
@@ -56,13 +57,17 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
             Ok(SharedOutbound(Arc::new(outbound)))
         }
 
-        ProxyProtocol::Tuic { uuid, .. } => {
-            // TODO: Phase 4b - implement TUIC v5 outbound
-            tracing::warn!(
-                "TUIC v5 outbound not yet implemented (uuid={}), using direct",
-                uuid
-            );
-            Ok(SharedOutbound(Arc::new(DirectOutbound)))
+        ProxyProtocol::Tuic { uuid, password, congestion_control, .. } => {
+            let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
+            let outbound = TuicOutbound::new(
+                &node.server,
+                node.port,
+                uuid,
+                password,
+                congestion_control,
+                tls_config,
+            )?;
+            Ok(SharedOutbound(Arc::new(outbound)))
         }
 
         ProxyProtocol::Hysteria2 { password, .. } => {

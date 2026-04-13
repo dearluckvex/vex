@@ -7,6 +7,7 @@ pub mod socks5;
 pub mod ss;
 pub mod transport;
 pub mod trojan;
+pub mod tuic;
 pub mod vless;
 pub mod vmess;
 

@@ -2,6 +2,7 @@ pub mod config;
 pub mod proxy;
 pub mod router;
 pub mod dns;
+pub mod system_proxy;
 
 pub use config::model::{
     AppConfig, Node, ProxyProtocol, TransportConfig, TransportType, Subscription, RoutingRule,
@@ -22,8 +23,12 @@ pub use proxy::vless::VlessOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::ss::SsOutbound;
 pub use proxy::vmess::VMessOutbound;
+pub use proxy::tuic::TuicOutbound;
 pub use proxy::factory::create_outbound;
 pub use proxy::routing::RoutingOutbound;
 
 pub use router::{Router, RouteAction, MatchRule, RuleSet, GeoIpDb};
-
+pub use system_proxy::{
+    DEFAULT_BYPASS, SystemProxyConfig, clear_system_proxy, get_system_proxy, set_system_proxy,
+    set_system_proxy_with_bypass, system_proxy_supported,
+};

@@ -34,6 +34,7 @@ reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
 # Crypto & proxy
 shadowsocks = { version = "1", features = ["aead-cipher-2022"] }
 quinn = "0.11"
+sysproxy = "0.3.0"
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
