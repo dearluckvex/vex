@@ -10,10 +10,10 @@ use xtune_core::config::model::{
 };
 use xtune_core::proxy::ProxyStats;
 use xtune_core::{
-    ProxyMode, ProxyService, RoutingOutbound, Router, SharedOutbound,
+    ProxyMode, ProxyService, RoutingOutbound, Router, SharedOutbound, TunProxy, TunRouteGuard,
     china_direct_ruleset, clear_system_proxy as clear_os_proxy, create_outbound,
     fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names,
-    set_system_proxy as set_os_proxy, system_proxy_supported,
+    resolve_to_ipv4, set_system_proxy as set_os_proxy, setup_tun_routes, system_proxy_supported,
 };
 
 // Color palette
@@ -73,6 +73,11 @@ pub struct AppState {
 
     // Proxy shutdown
     proxy_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+
+    // TUN mode
+    tun_enabled: bool,
+    tun_status: String,
+    tun_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -167,6 +172,9 @@ impl AppState {
             proxy_stats: None,
             tokio_handle,
             proxy_stop_tx: None,
+            tun_enabled: false,
+            tun_status: "Disabled".to_string(),
+            tun_stop_tx: None,
         }
     }
 
@@ -387,6 +395,10 @@ impl AppState {
     }
 
     fn stop_proxy(&mut self, cx: &mut Context<Self>) {
+        // Stop TUN first if active
+        if self.tun_enabled {
+            self.stop_tun(cx);
+        }
         if let Some(tx) = self.proxy_stop_tx.take() {
             let _ = tx.send(());
         }
@@ -574,6 +586,127 @@ impl AppState {
 
         self.system_proxy_enabled = enabled;
         self.system_proxy_status = status;
+        cx.notify();
+    }
+
+    // === TUN Mode ===
+
+    fn toggle_tun(&mut self, cx: &mut Context<Self>) {
+        if self.tun_enabled {
+            self.stop_tun(cx);
+        } else {
+            self.start_tun(cx);
+        }
+    }
+
+    fn start_tun(&mut self, cx: &mut Context<Self>) {
+        if self.tun_enabled {
+            return;
+        }
+        if !self.proxy_running {
+            self.tun_status = "⚠ Start proxy first".to_string();
+            cx.notify();
+            return;
+        }
+
+        // Get proxy server IP for loop avoidance
+        let proxy_server_ips: Vec<std::net::Ipv4Addr> = self
+            .selected_node
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| resolve_to_ipv4(&n.server))
+            .unwrap_or_default();
+
+        // Build outbound from current state
+        let node = self.selected_node.and_then(|i| self.nodes.get(i).cloned());
+        let outbound = match &node {
+            Some(n) => match create_outbound(n) {
+                Ok(o) => o,
+                Err(e) => {
+                    self.tun_status = format!("Error: {}", e);
+                    cx.notify();
+                    return;
+                }
+            },
+            None => SharedOutbound::direct(),
+        };
+
+        // Wrap with routing mode
+        let final_outbound = match self.proxy_mode {
+            ProxyMode::Global => outbound,
+            ProxyMode::Rule => {
+                let ruleset = china_direct_ruleset();
+                let router = std::sync::Arc::new(Router::new(ruleset));
+                let routing = RoutingOutbound::new(router, outbound);
+                SharedOutbound(std::sync::Arc::new(routing))
+            }
+            ProxyMode::Direct => SharedOutbound::direct(),
+        };
+
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        self.tun_stop_tx = Some(stop_tx);
+        self.tun_status = "Starting TUN...".to_string();
+        cx.notify();
+
+        let handle = self.tokio_handle.clone();
+        cx.spawn(async move |weak, cx| {
+            let result = handle
+                .spawn(async move {
+                    let tun_proxy = TunProxy::start(final_outbound)?;
+                    let route_info = tun_proxy.route_info();
+                    let route_guard = setup_tun_routes(&route_info, &proxy_server_ips)?;
+                    Ok::<_, anyhow::Error>((tun_proxy, route_guard))
+                })
+                .await;
+
+            match result {
+                Ok(Ok((tun_proxy, route_guard))) => {
+                    weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_enabled = true;
+                        this.tun_status = "✅ TUN active — all traffic proxied".to_string();
+                        cx.notify();
+                    })
+                    .ok();
+
+                    // Hold TUN alive until stop signal
+                    let _ = stop_rx.await;
+
+                    // Clean up: restore routes then stop TUN
+                    route_guard.restore();
+                    tun_proxy.stop().await;
+
+                    weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_enabled = false;
+                        this.tun_status = "Disabled".to_string();
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Ok(Err(e)) => {
+                    weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_stop_tx = None;
+                        this.tun_status = format!("❌ {}", e);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_stop_tx = None;
+                        this.tun_status = format!("❌ {}", e);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn stop_tun(&mut self, cx: &mut Context<Self>) {
+        if let Some(tx) = self.tun_stop_tx.take() {
+            let _ = tx.send(());
+        }
+        self.tun_status = "Stopping TUN...".to_string();
         cx.notify();
     }
 
@@ -937,6 +1070,55 @@ impl AppState {
                             .text_color(rgb(TEXT_SECONDARY))
                             .mt_2()
                             .child(format!("Status: {}", self.system_proxy_status)),
+                    ),
+            )
+            // TUN Mode card
+            .child(
+                self.card()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .mb_3()
+                            .child("🔒 TUN Mode (Global Proxy)"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child({
+                                if self.tun_enabled {
+                                    Button::new("tun-toggle")
+                                        .label("🟢 TUN Active — Click to Disable".to_string())
+                                        .primary()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.stop_tun(cx);
+                                        }))
+                                } else {
+                                    Button::new("tun-toggle")
+                                        .label("⭕ Enable TUN (requires root)".to_string())
+                                        .ghost()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.start_tun(cx);
+                                        }))
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_SECONDARY))
+                            .mt_2()
+                            .child(format!("{}", self.tun_status)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_MUTED))
+                            .mt_1()
+                            .child("Routes ALL TCP/UDP traffic through the proxy tunnel via virtual network interface"),
                     ),
             )
             // Status card

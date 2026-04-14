@@ -9,6 +9,7 @@ pub mod ss;
 pub mod transport;
 pub mod trojan;
 pub mod tuic;
+pub mod tun;
 pub mod vless;
 pub mod vmess;
 

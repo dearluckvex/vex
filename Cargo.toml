@@ -39,6 +39,11 @@ rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
 
+# TUN proxy
+tun = { version = "0.8", features = ["async"] }
+ipstack = "1.0.0"
+etherparse = "0.19"
+
 # Crypto primitives
 sha2 = "0.10"
 hex = "0.4"
