@@ -205,26 +205,39 @@ impl AppState {
 
         let outbound = match &node {
             Some(n) => match create_outbound(n) {
-                Ok(o) => o,
+                Ok(o) => {
+                    tracing::info!("Proxy outbound: {} (node: {})", o.0.name(), n.name);
+                    o
+                }
                 Err(e) => {
                     self.proxy_status = format!("Error: {}", e);
                     cx.notify();
                     return;
                 }
             },
-            None => SharedOutbound::direct(),
+            None => {
+                tracing::info!("Proxy outbound: direct (no node selected)");
+                SharedOutbound::direct()
+            }
         };
 
         // Wrap outbound based on proxy mode
         let final_outbound = match self.proxy_mode {
-            ProxyMode::Global => outbound,
+            ProxyMode::Global => {
+                tracing::info!("Proxy mode: Global");
+                outbound
+            }
             ProxyMode::Rule => {
+                tracing::info!("Proxy mode: Rule (China direct)");
                 let ruleset = china_direct_ruleset();
                 let router = std::sync::Arc::new(Router::new(ruleset));
                 let routing = RoutingOutbound::new(router, outbound);
                 SharedOutbound(std::sync::Arc::new(routing))
             }
-            ProxyMode::Direct => SharedOutbound::direct(),
+            ProxyMode::Direct => {
+                tracing::info!("Proxy mode: Direct (no proxy)");
+                SharedOutbound::direct()
+            }
         };
 
         let service = ProxyService::with_outbound(final_outbound);

@@ -200,9 +200,10 @@ impl TuicOutbound {
         send.write_u8(CMD_AUTHENTICATE).await?;
         send.write_all(&self.uuid).await?;
         send.write_all(&token).await?;
+        send.flush().await?;
 
         send.finish()?;
-        tracing::debug!("TUIC authentication sent");
+        tracing::info!("TUIC authentication sent");
 
         Ok(())
     }
@@ -229,10 +230,11 @@ impl Outbound for TuicOutbound {
             // Open bidirectional stream for this TCP connection
             let (mut send, recv) = conn.open_bi().await?;
 
-            // Send Connect command
+            // Send Connect command — must flush so server receives it before relay data
             send.write_u8(TUIC_VERSION).await?;
             send.write_u8(CMD_CONNECT).await?;
             write_address(&mut send, &host, port).await?;
+            send.flush().await?;
 
             tracing::debug!("TUIC connect to {}:{}", host, port);
 

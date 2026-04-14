@@ -64,12 +64,10 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
         }
 
         ProxyProtocol::Hysteria2 { password, .. } => {
-            // TODO: Phase 4b - implement Hysteria2 outbound
-            tracing::warn!(
-                "Hysteria2 outbound not yet implemented (password={}...)",
+            anyhow::bail!(
+                "Hysteria2 protocol not yet implemented (node uses password={}...)",
                 &password[..password.len().min(4)]
             );
-            Ok(SharedOutbound(Arc::new(DirectOutbound)))
         }
     }
 }

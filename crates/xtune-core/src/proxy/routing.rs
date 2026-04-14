@@ -32,6 +32,7 @@ impl Outbound for RoutingOutbound {
         port: u16,
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let action = self.router.route(host, port);
+        tracing::debug!("Route: {}:{} -> {:?}", host, port, action);
 
         match action {
             RouteAction::Proxy => self.proxy_outbound.0.connect(host, port),

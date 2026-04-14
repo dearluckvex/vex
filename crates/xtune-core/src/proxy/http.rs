@@ -151,7 +151,7 @@ async fn handle_http(mut stream: TcpStream, outbound: SharedOutbound) -> Result<
                     remote.write_all(&remaining).await?;
                 }
                 let (up, down) = tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
-                tracing::trace!(
+                tracing::debug!(
                     "HTTP CONNECT {}:{} done: up={} down={}",
                     host,
                     port,
@@ -160,6 +160,7 @@ async fn handle_http(mut stream: TcpStream, outbound: SharedOutbound) -> Result<
                 );
             }
             Err(e) => {
+                tracing::warn!("HTTP outbound connect failed for {}:{}: {}", host, port, e);
                 stream
                     .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                     .await?;

@@ -131,7 +131,7 @@ async fn handle_socks5(mut stream: TcpStream, outbound: SharedOutbound) -> Resul
                     stream.write_all(&socks5_reply(0x00)).await?; // success
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
-                    tracing::trace!(
+                    tracing::debug!(
                         "SOCKS5 relay {}:{} done: up={} down={}",
                         host,
                         port,
@@ -140,6 +140,7 @@ async fn handle_socks5(mut stream: TcpStream, outbound: SharedOutbound) -> Resul
                     );
                 }
                 Err(e) => {
+                    tracing::warn!("SOCKS5 outbound connect failed for {}:{}: {}", host, port, e);
                     stream.write_all(&socks5_reply(0x04)).await?; // host unreachable
                     return Err(e);
                 }
