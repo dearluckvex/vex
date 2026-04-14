@@ -293,12 +293,19 @@ impl AppState {
             };
 
             if ready_ok {
-                let proxy_check = verify_local_http_proxy(
-                    &listen_addr,
-                    http_port,
-                    std::time::Duration::from_secs(10),
-                )
-                .await;
+                let addr_for_check = listen_addr.clone();
+                let proxy_check = handle
+                    .spawn(async move {
+                        verify_local_http_proxy(
+                            &addr_for_check,
+                            http_port,
+                            std::time::Duration::from_secs(10),
+                        )
+                        .await
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("task join error: {}", e))
+                    .and_then(|r| r);
                 weak.update(cx, |this: &mut AppState, cx| {
                     if this.proxy_session_id != session_id {
                         return;
@@ -456,7 +463,7 @@ impl AppState {
                             };
                         }
                     };
-                    xtune_core::latency_test_node(&outbound, 10)
+                    xtune_core::latency_test_node(&outbound, 15)
                         .await
                         .map_err(|e| format!("{}", e))
                 })
@@ -553,8 +560,14 @@ impl AppState {
 
         if self.proxy_running {
             self.stop_proxy(cx);
+            let handle = self.tokio_handle.clone();
             cx.spawn(async move |weak, cx| {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    })
+                    .await
+                    .ok();
                 weak.update(cx, |this: &mut AppState, cx| {
                     this.start_proxy(cx);
                 })

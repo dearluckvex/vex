@@ -8,6 +8,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Once;
 use std::task::{Context, Poll};
 
 use anyhow::{Result, bail};
@@ -29,9 +30,9 @@ const CMD_DISSOCIATE: u8 = 0x03;
 const CMD_HEARTBEAT: u8 = 0x04;
 
 // Address types
+const ADDR_TYPE_DOMAIN: u8 = 0x00;
 const ADDR_TYPE_IPV4: u8 = 0x01;
-const ADDR_TYPE_DOMAIN: u8 = 0x03;
-const ADDR_TYPE_IPV6: u8 = 0x04;
+const ADDR_TYPE_IPV6: u8 = 0x02;
 
 /// TUIC v5 outbound connector.
 pub struct TuicOutbound {
@@ -43,7 +44,9 @@ pub struct TuicOutbound {
     skip_cert_verify: bool,
     alpn: Vec<String>,
     congestion: CongestionControl,
-    connection: tokio::sync::Mutex<Option<quinn::Connection>>,
+    // Keep the endpoint alive alongside the connection — dropping the endpoint
+    // shuts down the UDP socket and QUIC driver, breaking the connection.
+    state: tokio::sync::Mutex<Option<(quinn::Endpoint, quinn::Connection)>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,24 +96,24 @@ impl TuicOutbound {
             skip_cert_verify,
             alpn,
             congestion: CongestionControl::from_str(congestion),
-            connection: tokio::sync::Mutex::new(None),
+            state: tokio::sync::Mutex::new(None),
         })
     }
 
     /// Get or create QUIC connection, authenticating on first connect.
     async fn get_connection(&self) -> Result<quinn::Connection> {
-        let mut guard = self.connection.lock().await;
+        let mut guard = self.state.lock().await;
 
         // Check if existing connection is still alive
-        if let Some(ref conn) = *guard {
+        if let Some((_, ref conn)) = *guard {
             if conn.close_reason().is_none() {
                 return Ok(conn.clone());
             }
         }
 
-        // Create new connection
-        let conn = self.create_connection().await?;
-        *guard = Some(conn.clone());
+        // Create new connection (endpoint + connection)
+        let (endpoint, conn) = self.create_connection().await?;
+        *guard = Some((endpoint, conn.clone()));
 
         // Authenticate
         self.authenticate(&conn).await?;
@@ -118,7 +121,9 @@ impl TuicOutbound {
         Ok(conn)
     }
 
-    async fn create_connection(&self) -> Result<quinn::Connection> {
+    async fn create_connection(&self) -> Result<(quinn::Endpoint, quinn::Connection)> {
+        ensure_crypto_provider();
+
         // Build rustls config for QUIC
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -177,33 +182,38 @@ impl TuicOutbound {
 
         // Connect
         let connection = endpoint.connect(addr, &self.sni)?.await?;
-        tracing::info!("TUIC QUIC connection established to {}:{}", self.server, self.port);
+        tracing::info!(
+            "TUIC QUIC connection established to {}:{}",
+            self.server,
+            self.port
+        );
 
-        Ok(connection)
+        Ok((endpoint, connection))
     }
 
     /// Send authentication on a unidirectional stream.
     async fn authenticate(&self, conn: &quinn::Connection) -> Result<()> {
         let mut send = conn.open_uni().await?;
 
-        // Header: VERSION(1) + CMD(1)
+        let token = export_auth_token(conn, &self.uuid, &self.password)?;
         send.write_u8(TUIC_VERSION).await?;
         send.write_u8(CMD_AUTHENTICATE).await?;
-
-        // UUID (16 bytes)
         send.write_all(&self.uuid).await?;
-
-        // Token: length-prefixed password
-        let token = self.password.as_bytes();
-        // TUIC v5 uses variable-length token encoding
-        write_variable_len(&mut send, token.len()).await?;
-        send.write_all(token).await?;
+        send.write_all(&token).await?;
 
         send.finish()?;
         tracing::debug!("TUIC authentication sent");
 
         Ok(())
     }
+}
+
+fn ensure_crypto_provider() {
+    static INSTALL_PROVIDER: Once = Once::new();
+
+    INSTALL_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 impl Outbound for TuicOutbound {
@@ -250,9 +260,7 @@ impl AsyncRead for QuicBidiStream {
     ) -> Poll<io::Result<()>> {
         match Pin::new(&mut self.get_mut().recv).poll_read(cx, buf) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
-            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -266,35 +274,23 @@ impl AsyncWrite for QuicBidiStream {
     ) -> Poll<io::Result<usize>> {
         match Pin::new(&mut self.get_mut().send).poll_write(cx, buf) {
             Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
-            Poll::Ready(Err(e)) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
-            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
             Poll::Pending => Poll::Pending,
         }
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match Pin::new(&mut self.get_mut().send).poll_flush(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
-            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
             Poll::Pending => Poll::Pending,
         }
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match Pin::new(&mut self.get_mut().send).poll_shutdown(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
-            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -305,11 +301,7 @@ impl Unpin for QuicBidiStream {}
 // --- Protocol helpers ---
 
 /// Write TUIC address (type + addr + port).
-async fn write_address(
-    writer: &mut quinn::SendStream,
-    host: &str,
-    port: u16,
-) -> Result<()> {
+async fn write_address(writer: &mut quinn::SendStream, host: &str, port: u16) -> Result<()> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         match ip {
             IpAddr::V4(v4) => {
@@ -334,18 +326,21 @@ async fn write_address(
     Ok(())
 }
 
-/// Write variable-length integer (TUIC uses 2-byte BE length prefix for token).
-async fn write_variable_len(writer: &mut quinn::SendStream, len: usize) -> Result<()> {
-    writer
-        .write_all(&(len as u16).to_be_bytes())
-        .await
-        .map_err(Into::into)
-}
-
 /// Parse UUID string to 16 bytes.
 fn parse_uuid_bytes(uuid_str: &str) -> Result<[u8; 16]> {
     let uuid = uuid::Uuid::parse_str(uuid_str)?;
     Ok(*uuid.as_bytes())
+}
+
+fn export_auth_token(
+    conn: &quinn::Connection,
+    uuid: &[u8; 16],
+    password: &str,
+) -> Result<[u8; 32]> {
+    let mut token = [0u8; 32];
+    conn.export_keying_material(&mut token, uuid, password.as_bytes())
+        .map_err(|err| anyhow::anyhow!("failed to export TUIC auth token: {:?}", err))?;
+    Ok(token)
 }
 
 /// Resolve server hostname to SocketAddr.
@@ -464,5 +459,8 @@ mod tests {
         assert_eq!(CMD_PACKET, 0x02);
         assert_eq!(CMD_DISSOCIATE, 0x03);
         assert_eq!(CMD_HEARTBEAT, 0x04);
+        assert_eq!(ADDR_TYPE_DOMAIN, 0x00);
+        assert_eq!(ADDR_TYPE_IPV4, 0x01);
+        assert_eq!(ADDR_TYPE_IPV6, 0x02);
     }
 }
