@@ -103,7 +103,12 @@ impl AppState {
         cx: &mut Context<Self>,
         tokio_handle: tokio::runtime::Handle,
     ) -> Self {
-        let mut persisted = load_gui_state().unwrap_or_default();
+        let mut persisted = load_gui_state().unwrap_or_else(|| {
+            let default_config = AppConfig::default();
+            // Create default config on first launch
+            let _ = save_gui_state(&default_config);
+            default_config
+        });
         if normalize_node_names(&mut persisted.nodes) {
             let _ = save_gui_state(&persisted);
         }

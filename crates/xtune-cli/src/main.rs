@@ -5,12 +5,25 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use xtune_core::{
     AppConfig, ProxyProtocol, ProxyService, Router, RoutingOutbound, RuleSet, SharedOutbound,
-    create_outbound, fetch_subscription,
+    create_outbound, fetch_subscription, normalize_node_names,
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+
+    let args: Vec<String> = env::args().collect();
+
+    // Handle --init: generate a default config and exit
+    if args.iter().any(|a| a == "--init") {
+        let path = args
+            .iter()
+            .position(|a| a == "--init")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str())
+            .unwrap_or("config.yaml");
+        return init_config(path);
+    }
 
     let config_path = parse_config_path()?;
     let config = load_config(&config_path)
@@ -55,8 +68,33 @@ async fn main() -> Result<()> {
 fn parse_config_path() -> Result<String> {
     match env::args().nth(1) {
         Some(path) => Ok(path),
-        None => bail!("usage: xtune-cli <config.yaml>"),
+        None => {
+            // Try default path
+            let default_path = "config.yaml";
+            if std::path::Path::new(default_path).exists() {
+                tracing::info!("Using default config: {}", default_path);
+                Ok(default_path.to_string())
+            } else {
+                bail!(
+                    "usage: xtune-cli <config.yaml>\n       xtune-cli --init [path]  # generate default config"
+                )
+            }
+        }
     }
+}
+
+/// Generate a default config file at the given path.
+fn init_config(path: &str) -> Result<()> {
+    if std::path::Path::new(path).exists() {
+        bail!("config file already exists: {}", path);
+    }
+    let config = AppConfig::default();
+    let content = serde_yaml::to_string(&config)?;
+    fs::write(path, &content)?;
+    println!("✓ Default config written to: {}", path);
+    println!("  Edit the file to add subscriptions or nodes, then run:");
+    println!("  xtune-cli {}", path);
+    Ok(())
 }
 
 async fn load_config(path: &str) -> Result<AppConfig> {
@@ -83,6 +121,9 @@ async fn load_config(path: &str) -> Result<AppConfig> {
         }
         config.nodes = merged_nodes;
     }
+
+    // Normalize node names (URL decode)
+    normalize_node_names(&mut config.nodes);
 
     Ok(config)
 }

@@ -5,3 +5,4 @@ Cargo.lock
 *.so
 *.dylib
 Cargo.lock
+config.yaml

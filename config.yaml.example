@@ -1,0 +1,32 @@
+# XTune 默认配置文件
+# 启动后可通过订阅链接或手动添加节点
+#
+# 用法: xtune-cli config.yaml
+
+listen_addr: "127.0.0.1"
+socks_port: 1080
+http_port: 1087
+
+# 活跃节点索引（null 表示直连模式）
+active_node: null
+
+# 节点列表（启动后可通过订阅自动填充）
+nodes: []
+
+# 订阅源（启动时自动拉取）
+# 取消注释并填入你的订阅链接：
+# subscriptions:
+#   - name: "我的订阅"
+#     url: "https://example.com/subscribe?token=xxx"
+#     format: "auto"
+subscriptions: []
+
+# 路由规则
+# 示例:
+#   - rule_type: "domain-suffix"
+#     pattern: "google.com"
+#     target: "proxy"
+#   - rule_type: "geoip"
+#     pattern: "CN"
+#     target: "direct"
+rules: []
