@@ -8646,9 +8646,12 @@ dependencies = [
  "anyhow",
  "gpui",
  "gpui-component",
+ "serde_yaml",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots 0.26.11",
  "xtune-core",
 ]
 

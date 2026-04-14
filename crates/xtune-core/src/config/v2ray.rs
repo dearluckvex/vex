@@ -124,9 +124,7 @@ pub fn parse_v2ray_config(json_str: &str) -> Result<Vec<Node>> {
 
 /// Parse a vmess:// share link
 pub fn parse_vmess_uri(uri: &str) -> Result<Node> {
-    let encoded = uri
-        .strip_prefix("vmess://")
-        .context("Not a vmess:// URI")?;
+    let encoded = uri.strip_prefix("vmess://").context("Not a vmess:// URI")?;
 
     // Remove fragment (name after #)
     let encoded = encoded.split('#').next().unwrap_or(encoded);
@@ -154,7 +152,8 @@ pub fn parse_vmess_uri(uri: &str) -> Result<Node> {
 
     let name = link
         .ps
-        .clone()
+        .as_deref()
+        .map(super::model::decode_display_name)
         .unwrap_or_else(|| format!("VMess-{}", &link.add));
 
     let has_tls = link.tls.as_deref() == Some("tls");
@@ -180,9 +179,7 @@ pub fn parse_vmess_uri(uri: &str) -> Result<Node> {
 
 /// Parse a vless:// share link
 pub fn parse_vless_uri(uri: &str) -> Result<Node> {
-    let without_scheme = uri
-        .strip_prefix("vless://")
-        .context("Not a vless:// URI")?;
+    let without_scheme = uri.strip_prefix("vless://").context("Not a vless:// URI")?;
 
     let parsed = url::Url::parse(&format!("scheme://{}", without_scheme))
         .context("Failed to parse VLESS URI")?;
@@ -193,14 +190,8 @@ pub fn parse_vless_uri(uri: &str) -> Result<Node> {
         .context("Missing server host")?
         .to_string();
     let port = parsed.port().unwrap_or(443);
-    let name = url::form_urlencoded::parse(
-        parsed.fragment().unwrap_or("").as_bytes(),
-    )
-    .next()
-    .map(|(k, _)| k.to_string())
-    .unwrap_or_else(|| {
-        parsed.fragment().unwrap_or(&format!("VLESS-{}", server)).to_string()
-    });
+    let name =
+        decode_fragment_name(parsed.fragment()).unwrap_or_else(|| format!("VLESS-{}", server));
 
     let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
 
@@ -231,7 +222,7 @@ pub fn parse_ss_uri(uri: &str) -> Result<Node> {
 
     // Extract name from fragment
     let (main, fragment) = match without_scheme.split_once('#') {
-        Some((m, f)) => (m, Some(urlencoding::decode(f).unwrap_or_default().to_string())),
+        Some((m, f)) => (m, Some(super::model::decode_display_name(f))),
         None => (without_scheme, None),
     };
 
@@ -279,9 +270,7 @@ pub fn parse_ss_uri(uri: &str) -> Result<Node> {
         .context("Failed to decode SS base64")?;
     let decoded_str = String::from_utf8(decoded).context("Invalid UTF-8")?;
 
-    let (method_pass, hostport) = decoded_str
-        .split_once('@')
-        .context("Invalid SS format")?;
+    let (method_pass, hostport) = decoded_str.split_once('@').context("Invalid SS format")?;
     let (cipher, password) = method_pass
         .split_once(':')
         .context("Invalid SS method:password")?;
@@ -312,33 +301,31 @@ pub fn parse_ss_uri(uri: &str) -> Result<Node> {
 
 /// Parse a tuic:// share link
 pub fn parse_tuic_uri(uri: &str) -> Result<Node> {
-    let without_scheme = uri
-        .strip_prefix("tuic://")
-        .context("Not a tuic:// URI")?;
+    let without_scheme = uri.strip_prefix("tuic://").context("Not a tuic:// URI")?;
 
     let parsed = url::Url::parse(&format!("scheme://{}", without_scheme))
         .context("Failed to parse TUIC URI")?;
 
     let uuid = parsed.username().to_string();
-    let password = parsed
-        .password()
-        .unwrap_or("")
-        .to_string();
+    let password = parsed.password().unwrap_or("").to_string();
     let server = parsed
         .host_str()
         .context("Missing server host")?
         .to_string();
     let port = parsed.port().unwrap_or(443);
-    let name = parsed
-        .fragment()
-        .unwrap_or(&format!("TUIC-{}", server))
-        .to_string();
+    let name =
+        decode_fragment_name(parsed.fragment()).unwrap_or_else(|| format!("TUIC-{}", server));
 
-    let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+    let query_pairs: Vec<(String, String)> = parsed.query_pairs().into_owned().collect();
+    let params: HashMap<String, String> = query_pairs.iter().cloned().collect();
     let congestion_control = params
         .get("congestion_control")
         .cloned()
         .unwrap_or_else(|| "bbr".to_string());
+    let skip_cert_verify =
+        query_truthy(&params, "allow_insecure") || query_truthy(&params, "allowInsecure");
+    let sni = params.get("sni").cloned();
+    let alpn = collect_alpn_values(&query_pairs);
 
     Ok(Node {
         name,
@@ -350,7 +337,17 @@ pub fn parse_tuic_uri(uri: &str) -> Result<Node> {
             congestion_control,
             udp: true,
         },
-        transport: None,
+        transport: Some(TransportConfig {
+            transport_type: TransportType::Quic,
+            tls: Some(TlsConfig {
+                sni,
+                skip_cert_verify,
+                alpn: if alpn.is_empty() { None } else { Some(alpn) },
+                fingerprint: None,
+            }),
+            ws: None,
+            reality: None,
+        }),
         latency_ms: None,
         extra: HashMap::new(),
     })
@@ -371,10 +368,8 @@ pub fn parse_trojan_uri(uri: &str) -> Result<Node> {
         .context("Missing server host")?
         .to_string();
     let port = parsed.port().unwrap_or(443);
-    let name = parsed
-        .fragment()
-        .unwrap_or(&format!("Trojan-{}", server))
-        .to_string();
+    let name =
+        decode_fragment_name(parsed.fragment()).unwrap_or_else(|| format!("Trojan-{}", server));
 
     let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
     let security = params.get("security").map(|s| s.as_str()).unwrap_or("tls");
@@ -411,7 +406,10 @@ pub fn parse_proxy_uri(uri: &str) -> Result<Node> {
     } else if uri.starts_with("hysteria2://") || uri.starts_with("hy2://") {
         parse_hysteria2_uri(uri)
     } else {
-        anyhow::bail!("Unsupported URI scheme: {}", uri.split("://").next().unwrap_or("unknown"))
+        anyhow::bail!(
+            "Unsupported URI scheme: {}",
+            uri.split("://").next().unwrap_or("unknown")
+        )
     }
 }
 
@@ -431,10 +429,7 @@ pub fn parse_hysteria2_uri(uri: &str) -> Result<Node> {
         .context("Missing server host")?
         .to_string();
     let port = parsed.port().unwrap_or(443);
-    let name = parsed
-        .fragment()
-        .unwrap_or(&format!("Hy2-{}", server))
-        .to_string();
+    let name = decode_fragment_name(parsed.fragment()).unwrap_or_else(|| format!("Hy2-{}", server));
 
     Ok(Node {
         name,
@@ -448,6 +443,49 @@ pub fn parse_hysteria2_uri(uri: &str) -> Result<Node> {
         latency_ms: None,
         extra: HashMap::new(),
     })
+}
+
+fn decode_fragment_name(fragment: Option<&str>) -> Option<String> {
+    fragment
+        .map(super::model::decode_display_name)
+        .filter(|value| !value.is_empty())
+}
+
+fn query_truthy(params: &HashMap<String, String>, key: &str) -> bool {
+    params
+        .get(key)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn collect_alpn_values(query_pairs: &[(String, String)]) -> Vec<String> {
+    let mut indexed = Vec::new();
+    let mut plain = Vec::new();
+
+    for (key, value) in query_pairs {
+        if key == "alpn" {
+            plain.push(value.clone());
+            continue;
+        }
+
+        if let Some(index) = key
+            .strip_prefix("alpn[")
+            .and_then(|rest| rest.strip_suffix(']'))
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            indexed.push((index, value.clone()));
+        }
+    }
+
+    indexed.sort_by_key(|(index, _)| *index);
+    let mut values: Vec<String> = indexed.into_iter().map(|(_, value)| value).collect();
+    values.extend(plain);
+    values
 }
 
 fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
@@ -465,10 +503,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 .and_then(|v| v.as_str())
                 .context("Missing address")?
                 .to_string();
-            let port = vnext
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(443) as u16;
+            let port = vnext.get("port").and_then(|v| v.as_u64()).unwrap_or(443) as u16;
 
             let user = vnext
                 .get("users")
@@ -481,10 +516,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 .and_then(|v| v.as_str())
                 .context("Missing user id")?
                 .to_string();
-            let alter_id = user
-                .get("alterId")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
+            let alter_id = user.get("alterId").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let cipher = user
                 .get("security")
                 .and_then(|v| v.as_str())
@@ -529,10 +561,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 .and_then(|v| v.as_str())
                 .context("Missing address")?
                 .to_string();
-            let port = vnext
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(443) as u16;
+            let port = vnext.get("port").and_then(|v| v.as_u64()).unwrap_or(443) as u16;
 
             let user = vnext
                 .get("users")
@@ -587,10 +616,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 .and_then(|v| v.as_str())
                 .context("Missing address")?
                 .to_string();
-            let port = servers
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(8388) as u16;
+            let port = servers.get("port").and_then(|v| v.as_u64()).unwrap_or(8388) as u16;
             let cipher = servers
                 .get("method")
                 .and_then(|v| v.as_str())
@@ -655,20 +681,14 @@ fn build_v2ray_transport(ss: &V2RayStreamSettings) -> Option<TransportConfig> {
 
     let tls = if security == "tls" {
         Some(TlsConfig {
-            sni: ss
-                .tls_settings
-                .as_ref()
-                .and_then(|t| t.server_name.clone()),
+            sni: ss.tls_settings.as_ref().and_then(|t| t.server_name.clone()),
             skip_cert_verify: ss
                 .tls_settings
                 .as_ref()
                 .map(|t| t.allow_insecure)
                 .unwrap_or(false),
             alpn: ss.tls_settings.as_ref().map(|t| t.alpn.clone()),
-            fingerprint: ss
-                .tls_settings
-                .as_ref()
-                .and_then(|t| t.fingerprint.clone()),
+            fingerprint: ss.tls_settings.as_ref().and_then(|t| t.fingerprint.clone()),
         })
     } else {
         None
@@ -714,7 +734,10 @@ fn build_vmess_transport(
         Some(TlsConfig {
             sni: link.sni.clone().or_else(|| link.host.clone()),
             skip_cert_verify: false,
-            alpn: link.alpn.as_ref().map(|a| a.split(',').map(|s| s.trim().to_string()).collect()),
+            alpn: link
+                .alpn
+                .as_ref()
+                .map(|a| a.split(',').map(|s| s.trim().to_string()).collect()),
             fingerprint: None,
         })
     } else {
@@ -770,8 +793,13 @@ fn build_uri_transport(
     let tls = if security == "tls" {
         Some(TlsConfig {
             sni: params.get("sni").cloned(),
-            skip_cert_verify: params.get("allowInsecure").map(|v| v == "1").unwrap_or(false),
-            alpn: params.get("alpn").map(|a| a.split(',').map(|s| s.to_string()).collect()),
+            skip_cert_verify: params
+                .get("allowInsecure")
+                .map(|v| v == "1")
+                .unwrap_or(false),
+            alpn: params
+                .get("alpn")
+                .map(|a| a.split(',').map(|s| s.to_string()).collect()),
             fingerprint: params.get("fp").cloned(),
         })
     } else {
@@ -840,12 +868,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_vmess_uri_with_percent_encoded_name() {
+        let json = serde_json::json!({
+            "v": "2",
+            "ps": "%25E9%25A9%25AC%25E6%259D%25A5%25E8%25A5%25BF%25E4%25BA%259A",
+            "add": "example.com",
+            "port": "443",
+            "id": "b0e80a62-8a51-47f0-91f1-f0f7faf8d9d4",
+            "aid": "0"
+        });
+        let encoded = general_purpose::STANDARD.encode(json.to_string());
+        let uri = format!("vmess://{}", encoded);
+
+        let node = parse_vmess_uri(&uri).unwrap();
+        assert_eq!(node.name, "马来西亚");
+    }
+
+    #[test]
     fn test_parse_vless_uri() {
         let uri = "vless://uuid-here@example.com:443?encryption=none&security=tls&sni=example.com&type=ws&path=/v2ray#My-VLESS";
         let node = parse_vless_uri(uri).unwrap();
         assert_eq!(node.name, "My-VLESS");
         assert_eq!(node.server, "example.com");
         assert_eq!(node.port, 443);
+    }
+
+    #[test]
+    fn test_parse_vless_uri_with_double_encoded_name() {
+        let uri = "vless://uuid-here@example.com:443?encryption=none#%25E9%25A9%25AC%25E6%259D%25A5%25E8%25A5%25BF%25E4%25BA%259A";
+        let node = parse_vless_uri(uri).unwrap();
+        assert_eq!(node.name, "马来西亚");
     }
 
     #[test]
@@ -857,7 +909,9 @@ mod tests {
         assert_eq!(node.server, "1.2.3.4");
         assert_eq!(node.port, 8388);
         match &node.protocol {
-            ProxyProtocol::Shadowsocks { cipher, password, .. } => {
+            ProxyProtocol::Shadowsocks {
+                cipher, password, ..
+            } => {
                 assert_eq!(cipher, "aes-256-gcm");
                 assert_eq!(password, "password123");
             }
@@ -867,16 +921,38 @@ mod tests {
 
     #[test]
     fn test_parse_tuic_uri() {
-        let uri = "tuic://uuid-here:password@example.com:443?congestion_control=bbr#TUIC-SG";
+        let uri = "tuic://uuid-here:password@example.com:443?congestion_control=bbr&sni=www.python.org&allow_insecure=1&alpn%5B0%5D=h3#TUIC-SG";
         let node = parse_tuic_uri(uri).unwrap();
         assert_eq!(node.name, "TUIC-SG");
         assert_eq!(node.server, "example.com");
         match &node.protocol {
-            ProxyProtocol::Tuic { congestion_control, .. } => {
+            ProxyProtocol::Tuic {
+                congestion_control, ..
+            } => {
                 assert_eq!(congestion_control, "bbr");
             }
             _ => panic!("Expected TUIC"),
         }
+        let transport = node.transport.as_ref().expect("TUIC transport");
+        assert_eq!(transport.transport_type, TransportType::Quic);
+        let tls = transport.tls.as_ref().expect("TUIC TLS");
+        assert_eq!(tls.sni.as_deref(), Some("www.python.org"));
+        assert!(tls.skip_cert_verify);
+        assert_eq!(tls.alpn.as_ref().unwrap(), &vec!["h3".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_tuic_uri_with_percent_encoded_name() {
+        let uri = "tuic://uuid-here:password@example.com:443?congestion_control=bbr#%E9%A9%AC%E6%9D%A5%E8%A5%BF%E4%BA%9A";
+        let node = parse_tuic_uri(uri).unwrap();
+        assert_eq!(node.name, "马来西亚");
+    }
+
+    #[test]
+    fn test_parse_tuic_uri_with_double_encoded_name() {
+        let uri = "tuic://uuid-here:password@example.com:443?congestion_control=bbr#%25E9%25A9%25AC%25E6%259D%25A5%25E8%25A5%25BF%25E4%25BA%259A";
+        let node = parse_tuic_uri(uri).unwrap();
+        assert_eq!(node.name, "马来西亚");
     }
 
     #[test]
@@ -885,6 +961,13 @@ mod tests {
         let node = parse_trojan_uri(uri).unwrap();
         assert_eq!(node.name, "Trojan-JP");
         assert_eq!(node.server, "example.com");
+    }
+
+    #[test]
+    fn test_parse_hysteria2_uri_with_percent_encoded_name() {
+        let uri = "hy2://password@example.com:443#%E9%A9%AC%E6%9D%A5%E8%A5%BF%E4%BA%9A";
+        let node = parse_hysteria2_uri(uri).unwrap();
+        assert_eq!(node.name, "马来西亚");
     }
 
     #[test]

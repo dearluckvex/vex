@@ -104,11 +104,7 @@ fn convert_clash_proxy(proxy: &ClashProxy) -> Result<Node> {
 
     let protocol = match proxy.proxy_type.as_str() {
         "ss" => {
-            let cipher = proxy
-                .cipher
-                .as_ref()
-                .context("SS missing cipher")?
-                .clone();
+            let cipher = proxy.cipher.as_ref().context("SS missing cipher")?.clone();
             let password = proxy
                 .password
                 .as_ref()
@@ -123,10 +119,7 @@ fn convert_clash_proxy(proxy: &ClashProxy) -> Result<Node> {
         "vmess" => {
             let uuid = proxy.uuid.as_ref().context("VMess missing uuid")?.clone();
             let alter_id = proxy.alter_id.unwrap_or(0);
-            let cipher = proxy
-                .cipher
-                .clone()
-                .unwrap_or_else(|| "auto".to_string());
+            let cipher = proxy.cipher.clone().unwrap_or_else(|| "auto".to_string());
             ProxyProtocol::VMess {
                 uuid,
                 alter_id,
@@ -182,7 +175,7 @@ fn convert_clash_proxy(proxy: &ClashProxy) -> Result<Node> {
     let transport = build_transport(proxy);
 
     Ok(Node {
-        name: proxy.name.clone(),
+        name: super::model::decode_display_name(&proxy.name),
         server: proxy.server.clone(),
         port: proxy.port,
         protocol,
@@ -231,10 +224,7 @@ fn build_transport(proxy: &ClashProxy) -> Option<TransportConfig> {
 
     let ws = if has_ws {
         proxy.ws_opts.as_ref().map(|opts| {
-            let host = opts
-                .headers
-                .as_ref()
-                .and_then(|h| h.get("Host").cloned());
+            let host = opts.headers.as_ref().and_then(|h| h.get("Host").cloned());
             WsConfig {
                 path: opts.path.clone(),
                 host,
@@ -318,7 +308,10 @@ proxies:
         assert_eq!(transport.transport_type, TransportType::WebSocket);
         assert!(transport.tls.is_some());
         assert!(transport.ws.is_some());
-        assert_eq!(transport.ws.as_ref().unwrap().path.as_deref(), Some("/v2ray"));
+        assert_eq!(
+            transport.ws.as_ref().unwrap().path.as_deref(),
+            Some("/v2ray")
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod http;
 pub mod routing;
 pub mod service;
 pub mod socks5;
+pub mod speedtest;
 pub mod ss;
 pub mod transport;
 pub mod trojan;
@@ -11,8 +12,8 @@ pub mod tuic;
 pub mod vless;
 pub mod vmess;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Proxy connection state.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,17 +69,23 @@ impl ProxyStats {
     }
 
     pub(crate) fn add_connection(&self) {
-        self.inner.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .active_connections
+            .fetch_add(1, Ordering::Relaxed);
         self.inner.total_connections.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn remove_connection(&self) {
-        self.inner.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.inner
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
     }
 
     pub(crate) fn add_bytes(&self, sent: u64, received: u64) {
         self.inner.bytes_sent.fetch_add(sent, Ordering::Relaxed);
-        self.inner.bytes_received.fetch_add(received, Ordering::Relaxed);
+        self.inner
+            .bytes_received
+            .fetch_add(received, Ordering::Relaxed);
     }
 
     pub fn reset(&self) {

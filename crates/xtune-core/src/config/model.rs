@@ -1,6 +1,36 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Decode a percent-encoded display name.
+///
+/// Iteratively URL-decodes up to 3 times to handle multi-level encoding
+/// commonly seen in subscription share links. Also replaces `+` with space
+/// and trims surrounding whitespace.
+pub fn decode_display_name(value: &str) -> String {
+    let mut decoded = value.replace('+', " ");
+    for _ in 0..3 {
+        match urlencoding::decode(&decoded) {
+            Ok(next) if next.as_ref() != decoded => decoded = next.into_owned(),
+            _ => break,
+        }
+    }
+    decoded.trim().to_string()
+}
+
+/// Decode and normalize the names of all nodes in-place.
+/// Returns `true` if any name was changed.
+pub fn normalize_node_names(nodes: &mut [Node]) -> bool {
+    let mut changed = false;
+    for node in nodes {
+        let normalized = decode_display_name(&node.name);
+        if normalized != node.name {
+            node.name = normalized;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Unified application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -48,7 +78,7 @@ pub struct Node {
     /// Transport layer config
     pub transport: Option<TransportConfig>,
     /// Measured latency in ms (None if not tested)
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u32>,
     /// Extra metadata
     #[serde(default)]
@@ -185,4 +215,69 @@ pub struct RoutingRule {
     pub pattern: String,
     /// Target: "direct", "proxy", "reject"
     pub target: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_single_encoded() {
+        assert_eq!(
+            decode_display_name("%E9%A9%AC%E6%9D%A5%E8%A5%BF%E4%BA%9A"),
+            "马来西亚"
+        );
+    }
+
+    #[test]
+    fn decode_double_encoded() {
+        assert_eq!(
+            decode_display_name("%25E9%25A9%25AC%25E6%259D%25A5%25E8%25A5%25BF%25E4%25BA%259A"),
+            "马来西亚"
+        );
+    }
+
+    #[test]
+    fn decode_plus_as_space() {
+        assert_eq!(decode_display_name("Hong+Kong+01"), "Hong Kong 01");
+    }
+
+    #[test]
+    fn decode_mixed_encoding() {
+        assert_eq!(
+            decode_display_name("%F0%9F%87%B2%F0%9F%87%BE+Malaysia"),
+            "🇲🇾 Malaysia"
+        );
+    }
+
+    #[test]
+    fn decode_trims_whitespace() {
+        assert_eq!(decode_display_name("  test  "), "test");
+    }
+
+    #[test]
+    fn decode_plain_text_unchanged() {
+        assert_eq!(decode_display_name("Tokyo 01"), "Tokyo 01");
+    }
+
+    #[test]
+    fn normalize_nodes_decodes_names() {
+        let mut nodes = vec![
+            Node {
+                name: "%E9%A6%99%E6%B8%AF".to_string(),
+                server: "1.2.3.4".to_string(),
+                port: 443,
+                protocol: ProxyProtocol::Shadowsocks {
+                    cipher: "aes-256-gcm".to_string(),
+                    password: "test".to_string(),
+                    udp: false,
+                },
+                transport: None,
+                latency_ms: None,
+                extra: Default::default(),
+            },
+        ];
+        assert!(normalize_node_names(&mut nodes));
+        assert_eq!(nodes[0].name, "香港");
+    }
 }

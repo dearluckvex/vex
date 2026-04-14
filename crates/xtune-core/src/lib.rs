@@ -1,33 +1,35 @@
 pub mod config;
+pub mod dns;
 pub mod proxy;
 pub mod router;
-pub mod dns;
 pub mod system_proxy;
 
-pub use config::model::{
-    AppConfig, Node, ProxyProtocol, TransportConfig, TransportType, Subscription, RoutingRule,
-};
 pub use config::clash::parse_clash_config;
-pub use config::v2ray::{
-    parse_v2ray_config, parse_proxy_uri, parse_vmess_uri, parse_vless_uri,
-    parse_ss_uri, parse_tuic_uri, parse_trojan_uri, parse_hysteria2_uri,
+pub use config::model::{
+    AppConfig, Node, ProxyProtocol, RoutingRule, Subscription, TransportConfig, TransportType,
+    decode_display_name, normalize_node_names,
 };
-pub use config::subscription::{fetch_subscription, parse_subscription_content, detect_format};
+pub use config::subscription::{detect_format, fetch_subscription, parse_subscription_content};
+pub use config::v2ray::{
+    parse_hysteria2_uri, parse_proxy_uri, parse_ss_uri, parse_trojan_uri, parse_tuic_uri,
+    parse_v2ray_config, parse_vless_uri, parse_vmess_uri,
+};
 
-pub use proxy::{ProxyState, ProxyStats};
-pub use proxy::connector::{Outbound, DirectOutbound, SharedOutbound, BoxProxyStream, ProxyStream};
+pub use proxy::connector::{BoxProxyStream, DirectOutbound, Outbound, ProxyStream, SharedOutbound};
+pub use proxy::factory::create_outbound;
+pub use proxy::http::HttpProxyServer;
+pub use proxy::routing::RoutingOutbound;
 pub use proxy::service::ProxyService;
 pub use proxy::socks5::Socks5Server;
-pub use proxy::http::HttpProxyServer;
-pub use proxy::vless::VlessOutbound;
-pub use proxy::trojan::TrojanOutbound;
+pub use proxy::speedtest::{SpeedTestResult, latency_test_node, speed_test_node};
 pub use proxy::ss::SsOutbound;
-pub use proxy::vmess::VMessOutbound;
+pub use proxy::trojan::TrojanOutbound;
 pub use proxy::tuic::TuicOutbound;
-pub use proxy::factory::create_outbound;
-pub use proxy::routing::RoutingOutbound;
+pub use proxy::vless::VlessOutbound;
+pub use proxy::vmess::VMessOutbound;
+pub use proxy::{ProxyState, ProxyStats};
 
-pub use router::{Router, RouteAction, MatchRule, RuleSet, GeoIpDb};
+pub use router::{GeoIpDb, MatchRule, RouteAction, Router, RuleSet};
 pub use system_proxy::{
     DEFAULT_BYPASS, SystemProxyConfig, clear_system_proxy, get_system_proxy, set_system_proxy,
     set_system_proxy_with_bypass, system_proxy_supported,
