@@ -10,7 +10,8 @@ use xtune_core::config::model::{
 };
 use xtune_core::proxy::ProxyStats;
 use xtune_core::{
-    ProxyService, SharedOutbound, clear_system_proxy as clear_os_proxy, create_outbound,
+    ProxyMode, ProxyService, RoutingOutbound, Router, SharedOutbound,
+    china_direct_ruleset, clear_system_proxy as clear_os_proxy, create_outbound,
     fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names,
     set_system_proxy as set_os_proxy, system_proxy_supported,
 };
@@ -38,6 +39,9 @@ pub struct AppState {
     proxy_status: String,
     proxy_validation_status: String,
     proxy_session_id: u64,
+
+    // Proxy routing mode
+    proxy_mode: ProxyMode,
 
     // Node management
     nodes: Vec<Node>,
@@ -141,6 +145,7 @@ impl AppState {
             proxy_status: "Disconnected".to_string(),
             proxy_validation_status: "Not validated".to_string(),
             proxy_session_id: 0,
+            proxy_mode: persisted.proxy_mode.clone(),
             nodes: persisted.nodes.clone(),
             selected_node,
             active_proxy_node: None,
@@ -210,7 +215,19 @@ impl AppState {
             None => SharedOutbound::direct(),
         };
 
-        let service = ProxyService::with_outbound(outbound);
+        // Wrap outbound based on proxy mode
+        let final_outbound = match self.proxy_mode {
+            ProxyMode::Global => outbound,
+            ProxyMode::Rule => {
+                let ruleset = china_direct_ruleset();
+                let router = std::sync::Arc::new(Router::new(ruleset));
+                let routing = RoutingOutbound::new(router, outbound);
+                SharedOutbound(std::sync::Arc::new(routing))
+            }
+            ProxyMode::Direct => SharedOutbound::direct(),
+        };
+
+        let service = ProxyService::with_outbound(final_outbound);
         let stats = service.stats().clone();
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -555,6 +572,34 @@ impl AppState {
         cx.notify();
     }
 
+    fn set_proxy_mode(&mut self, mode: ProxyMode, cx: &mut Context<Self>) {
+        if self.proxy_mode == mode {
+            return;
+        }
+        self.proxy_mode = mode;
+        self.persist_gui_state();
+
+        // If proxy is running, restart with new mode
+        if self.proxy_running {
+            self.stop_proxy(cx);
+            let handle = self.tokio_handle.clone();
+            cx.spawn(async move |weak, cx| {
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    })
+                    .await
+                    .ok();
+                weak.update(cx, |this: &mut AppState, cx| {
+                    this.start_proxy(cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
     fn activate_node(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_node = Some(index);
 
@@ -585,6 +630,7 @@ impl AppState {
             listen_addr: self.listen_addr.clone(),
             socks_port: self.socks_port,
             http_port: self.http_port,
+            proxy_mode: self.proxy_mode.clone(),
             nodes: self.nodes.clone(),
             active_node: self.selected_node,
             subscriptions: Vec::new(),
@@ -741,12 +787,11 @@ impl AppState {
             .and_then(|i| self.nodes.get(i))
             .map(|n| n.name.clone())
             .unwrap_or_else(|| "(not activated)".to_string());
-        let system_proxy_mode = if self.system_proxy_managed_by_app {
-            "Managed by XTune"
-        } else if self.system_proxy_enabled {
-            "Enabled externally"
-        } else {
-            "Disabled"
+
+        let proxy_mode_label = match self.proxy_mode {
+            ProxyMode::Global => "Global (all traffic via proxy)",
+            ProxyMode::Rule => "Rule (China direct / overseas proxy)",
+            ProxyMode::Direct => "Direct (no proxy)",
         };
 
         let btn_label = if self.proxy_running {
@@ -766,6 +811,8 @@ impl AppState {
             .map(|s| s.total_connections())
             .unwrap_or(0);
 
+        let cur_mode = self.proxy_mode.clone();
+
         div()
             .flex()
             .flex_col()
@@ -776,6 +823,108 @@ impl AppState {
                     .text_2xl()
                     .font_weight(FontWeight::BOLD)
                     .child("XTune Proxy Client"),
+            )
+            // Proxy Mode card
+            .child(
+                self.card()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .mb_3()
+                            .child("Proxy Mode"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child({
+                                let btn = Button::new("mode-global")
+                                    .label("🌐 Global".to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_proxy_mode(ProxyMode::Global, cx);
+                                    }));
+                                if cur_mode == ProxyMode::Global {
+                                    btn.primary()
+                                } else {
+                                    btn.ghost()
+                                }
+                            })
+                            .child({
+                                let btn = Button::new("mode-rule")
+                                    .label("🇨🇳 Rule".to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_proxy_mode(ProxyMode::Rule, cx);
+                                    }));
+                                if cur_mode == ProxyMode::Rule {
+                                    btn.primary()
+                                } else {
+                                    btn.ghost()
+                                }
+                            })
+                            .child({
+                                let btn = Button::new("mode-direct")
+                                    .label("⚡ Direct".to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_proxy_mode(ProxyMode::Direct, cx);
+                                    }));
+                                if cur_mode == ProxyMode::Direct {
+                                    btn.primary()
+                                } else {
+                                    btn.ghost()
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_SECONDARY))
+                            .mt_2()
+                            .child(proxy_mode_label),
+                    ),
+            )
+            // System Proxy card
+            .child(
+                self.card()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .mb_3()
+                            .child("System Proxy"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child({
+                                if self.system_proxy_enabled {
+                                    Button::new("sys-proxy-toggle")
+                                        .label("🟢 Enabled — Click to Disable".to_string())
+                                        .primary()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.disable_system_proxy(cx);
+                                        }))
+                                } else {
+                                    Button::new("sys-proxy-toggle")
+                                        .label("⭕ Disabled — Click to Enable".to_string())
+                                        .ghost()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.enable_system_proxy(cx);
+                                        }))
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_SECONDARY))
+                            .mt_2()
+                            .child(format!("Status: {}", self.system_proxy_status)),
+                    ),
             )
             // Status card
             .child(
@@ -826,12 +975,6 @@ impl AppState {
                                     "Proxy Validation: {}",
                                     self.proxy_validation_status
                                 )),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(TEXT_SECONDARY))
-                                .child(format!("System Proxy Mode: {}", system_proxy_mode)),
                         )
                         .child({
                             let connect_btn = Button::new("connect-btn")

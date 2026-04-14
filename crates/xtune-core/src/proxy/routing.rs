@@ -87,10 +87,7 @@ mod tests {
     #[tokio::test]
     async fn test_routing_outbound_reject() {
         let mut rules = RuleSet::new();
-        rules.add_rule(
-            MatchRule::DomainKeyword("ads".into()),
-            RouteAction::Reject,
-        );
+        rules.add_rule(MatchRule::DomainKeyword("ads".into()), RouteAction::Reject);
         let router = Arc::new(Router::new(rules));
 
         let outbound = RoutingOutbound::new(router, SharedOutbound::direct());

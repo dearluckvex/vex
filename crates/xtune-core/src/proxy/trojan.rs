@@ -20,12 +20,7 @@ pub struct TrojanOutbound {
 }
 
 impl TrojanOutbound {
-    pub fn new(
-        server: &str,
-        port: u16,
-        password: &str,
-        tls_config: Option<&TlsConfig>,
-    ) -> Self {
+    pub fn new(server: &str, port: u16, password: &str, tls_config: Option<&TlsConfig>) -> Self {
         let hash = Sha224::digest(password.as_bytes());
         let password_hash = hex::encode(hash);
 

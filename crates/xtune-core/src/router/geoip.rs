@@ -156,22 +156,10 @@ mod tests {
     fn test_builtin_private() {
         let db = GeoIpDb::builtin();
 
-        assert_eq!(
-            db.lookup("192.168.1.1".parse().unwrap()),
-            Some("PRIVATE")
-        );
-        assert_eq!(
-            db.lookup("10.0.0.1".parse().unwrap()),
-            Some("PRIVATE")
-        );
-        assert_eq!(
-            db.lookup("172.16.5.1".parse().unwrap()),
-            Some("PRIVATE")
-        );
-        assert_eq!(
-            db.lookup("127.0.0.1".parse().unwrap()),
-            Some("PRIVATE")
-        );
+        assert_eq!(db.lookup("192.168.1.1".parse().unwrap()), Some("PRIVATE"));
+        assert_eq!(db.lookup("10.0.0.1".parse().unwrap()), Some("PRIVATE"));
+        assert_eq!(db.lookup("172.16.5.1".parse().unwrap()), Some("PRIVATE"));
+        assert_eq!(db.lookup("127.0.0.1".parse().unwrap()), Some("PRIVATE"));
         assert_eq!(db.lookup("::1".parse().unwrap()), Some("PRIVATE"));
 
         // Public IPs should not match
@@ -193,10 +181,7 @@ mod tests {
         assert_eq!(db.lookup("1.2.3.4".parse().unwrap()), Some("CN"));
         assert_eq!(db.lookup("8.8.8.8".parse().unwrap()), Some("US"));
         assert_eq!(db.lookup("8.8.9.1".parse().unwrap()), None);
-        assert_eq!(
-            db.lookup("2001:db8::1".parse().unwrap()),
-            Some("TEST")
-        );
+        assert_eq!(db.lookup("2001:db8::1".parse().unwrap()), Some("TEST"));
     }
 
     #[test]

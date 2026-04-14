@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::config::model::{TlsConfig, TransportConfig, TransportType};

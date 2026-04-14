@@ -6,8 +6,8 @@ pub mod system_proxy;
 
 pub use config::clash::parse_clash_config;
 pub use config::model::{
-    AppConfig, Node, ProxyProtocol, RoutingRule, Subscription, TransportConfig, TransportType,
-    decode_display_name, normalize_node_names,
+    AppConfig, Node, ProxyMode, ProxyProtocol, RoutingRule, Subscription, TransportConfig,
+    TransportType, decode_display_name, normalize_node_names,
 };
 pub use config::subscription::{detect_format, fetch_subscription, parse_subscription_content};
 pub use config::v2ray::{
@@ -29,7 +29,7 @@ pub use proxy::vless::VlessOutbound;
 pub use proxy::vmess::VMessOutbound;
 pub use proxy::{ProxyState, ProxyStats};
 
-pub use router::{GeoIpDb, MatchRule, RouteAction, Router, RuleSet};
+pub use router::{GeoIpDb, MatchRule, RouteAction, Router, RuleSet, china_direct_ruleset};
 pub use system_proxy::{
     DEFAULT_BYPASS, SystemProxyConfig, clear_system_proxy, get_system_proxy, set_system_proxy,
     set_system_proxy_with_bypass, system_proxy_supported,

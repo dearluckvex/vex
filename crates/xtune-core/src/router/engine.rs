@@ -246,10 +246,7 @@ mod tests {
             MatchRule::DomainSuffix(".google.com".into()),
             RouteAction::Proxy,
         );
-        rules.add_rule(
-            MatchRule::DomainSuffix(".cn".into()),
-            RouteAction::Direct,
-        );
+        rules.add_rule(MatchRule::DomainSuffix(".cn".into()), RouteAction::Direct);
         rules.set_default(RouteAction::Proxy);
         let router = Router::new(rules);
 
@@ -268,14 +265,8 @@ mod tests {
         );
         let router = Router::new(rules);
 
-        assert_eq!(
-            router.route("www.google.com", 443),
-            RouteAction::Proxy
-        );
-        assert_eq!(
-            router.route("googleapis.com", 443),
-            RouteAction::Proxy
-        );
+        assert_eq!(router.route("www.google.com", 443), RouteAction::Proxy);
+        assert_eq!(router.route("googleapis.com", 443), RouteAction::Proxy);
         assert_eq!(router.route("example.com", 443), RouteAction::Proxy); // default
     }
 
@@ -332,10 +323,7 @@ mod tests {
     #[test]
     fn test_route_match_all() {
         let mut rules = RuleSet::new();
-        rules.add_rule(
-            MatchRule::DomainSuffix(".cn".into()),
-            RouteAction::Direct,
-        );
+        rules.add_rule(MatchRule::DomainSuffix(".cn".into()), RouteAction::Direct);
         rules.add_rule(MatchRule::MatchAll, RouteAction::Proxy);
         let router = Router::new(rules);
 
@@ -346,10 +334,7 @@ mod tests {
     #[test]
     fn test_route_reject() {
         let mut rules = RuleSet::new();
-        rules.add_rule(
-            MatchRule::DomainKeyword("ads".into()),
-            RouteAction::Reject,
-        );
+        rules.add_rule(MatchRule::DomainKeyword("ads".into()), RouteAction::Reject);
         let router = Router::new(rules);
 
         assert_eq!(router.route("ads.example.com", 80), RouteAction::Reject);
@@ -395,10 +380,7 @@ mod tests {
             parse_cidr("192.168.0.0/16"),
             Some(("192.168.0.0".parse().unwrap(), 16))
         );
-        assert_eq!(
-            parse_cidr("::1/128"),
-            Some(("::1".parse().unwrap(), 128))
-        );
+        assert_eq!(parse_cidr("::1/128"), Some(("::1".parse().unwrap(), 128)));
         assert_eq!(parse_cidr("invalid"), None);
         assert_eq!(parse_cidr("192.168.0.0/33"), None);
     }

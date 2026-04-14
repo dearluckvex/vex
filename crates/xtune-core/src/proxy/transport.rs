@@ -5,8 +5,8 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
 
 use crate::config::model::TlsConfig;
 
@@ -53,9 +53,7 @@ pub async fn connect_with_tls(
 ) -> Result<Box<dyn super::connector::ProxyStream>> {
     let tcp = TcpStream::connect(format!("{}:{}", server, port)).await?;
     if use_tls {
-        let sni = tls_config
-            .and_then(|c| c.sni.as_deref())
-            .unwrap_or(server);
+        let sni = tls_config.and_then(|c| c.sni.as_deref()).unwrap_or(server);
         let tls = connect_tls(tcp, sni, tls_config).await?;
         Ok(Box::new(tls))
     } else {

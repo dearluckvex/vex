@@ -1,10 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
-use super::connector::SharedOutbound;
 use super::ProxyStats;
+use super::connector::SharedOutbound;
 
 /// HTTP proxy server supporting CONNECT tunnels and plain HTTP forwarding.
 pub struct HttpProxyServer {
@@ -151,7 +151,13 @@ async fn handle_http(mut stream: TcpStream, outbound: SharedOutbound) -> Result<
                     remote.write_all(&remaining).await?;
                 }
                 let (up, down) = tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
-                tracing::trace!("HTTP CONNECT {}:{} done: up={} down={}", host, port, up, down);
+                tracing::trace!(
+                    "HTTP CONNECT {}:{} done: up={} down={}",
+                    host,
+                    port,
+                    up,
+                    down
+                );
             }
             Err(e) => {
                 stream
@@ -210,8 +216,9 @@ async fn handle_plain_http(
     let rewritten_first_line = format!("{} {} HTTP/1.1", method, path);
     let rest_of_header = &header_str[first_line_end..];
 
-    // Remove Proxy-Connection header, add Connection: close
+    // Remove Proxy-Connection header, normalize Connection for the upstream request.
     let mut new_header = rewritten_first_line;
+    let mut saw_connection = false;
     for line in rest_of_header.split("\r\n") {
         if line.is_empty() {
             continue;
@@ -219,10 +226,16 @@ async fn handle_plain_http(
         if line.to_lowercase().starts_with("proxy-connection:") {
             continue;
         }
+        if line.to_lowercase().starts_with("connection:") {
+            saw_connection = true;
+        }
         new_header.push_str("\r\n");
         new_header.push_str(line);
     }
-    // Ensure header ends with \r\n\r\n (already in rest_of_header)
+    if !saw_connection {
+        new_header.push_str("\r\nConnection: close");
+    }
+    new_header.push_str("\r\n\r\n");
 
     remote.write_all(new_header.as_bytes()).await?;
 

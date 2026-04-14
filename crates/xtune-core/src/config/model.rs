@@ -1,6 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Proxy routing mode
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    /// All traffic goes through the proxy node
+    Global,
+    /// China-direct / overseas-proxy based on built-in rules
+    Rule,
+    /// All traffic connects directly (no proxy)
+    Direct,
+}
+
+impl Default for ProxyMode {
+    fn default() -> Self {
+        Self::Global
+    }
+}
+
 /// Decode a percent-encoded display name.
 ///
 /// Iteratively URL-decodes up to 3 times to handle multi-level encoding
@@ -40,6 +58,9 @@ pub struct AppConfig {
     pub socks_port: u16,
     /// Local HTTP proxy port
     pub http_port: u16,
+    /// Proxy routing mode
+    #[serde(default)]
+    pub proxy_mode: ProxyMode,
     /// Proxy nodes
     pub nodes: Vec<Node>,
     /// Active node index
@@ -56,6 +77,7 @@ impl Default for AppConfig {
             listen_addr: "127.0.0.1".to_string(),
             socks_port: 1080,
             http_port: 1087,
+            proxy_mode: ProxyMode::default(),
             nodes: Vec::new(),
             active_node: None,
             subscriptions: Vec::new(),

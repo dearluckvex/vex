@@ -15,34 +15,22 @@ use super::vmess::VMessOutbound;
 pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
     match &node.protocol {
         ProxyProtocol::VLess { uuid, .. } => {
-            let outbound = VlessOutbound::new(
-                &node.server,
-                node.port,
-                uuid,
-                node.transport.as_ref(),
-            )?;
+            let outbound =
+                VlessOutbound::new(&node.server, node.port, uuid, node.transport.as_ref())?;
             Ok(SharedOutbound(Arc::new(outbound)))
         }
 
         ProxyProtocol::Trojan { password, .. } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
-            let outbound = TrojanOutbound::new(
-                &node.server,
-                node.port,
-                password,
-                tls_config,
-            );
+            let outbound = TrojanOutbound::new(&node.server, node.port, password, tls_config);
             Ok(SharedOutbound(Arc::new(outbound)))
         }
 
-        ProxyProtocol::Shadowsocks { cipher, password, .. } => {
+        ProxyProtocol::Shadowsocks {
+            cipher, password, ..
+        } => {
             let normalized_cipher = normalize_ss_cipher(cipher);
-            let outbound = SsOutbound::new(
-                &node.server,
-                node.port,
-                normalized_cipher,
-                password,
-            )?;
+            let outbound = SsOutbound::new(&node.server, node.port, normalized_cipher, password)?;
             Ok(SharedOutbound(Arc::new(outbound)))
         }
 
@@ -57,7 +45,12 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
             Ok(SharedOutbound(Arc::new(outbound)))
         }
 
-        ProxyProtocol::Tuic { uuid, password, congestion_control, .. } => {
+        ProxyProtocol::Tuic {
+            uuid,
+            password,
+            congestion_control,
+            ..
+        } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
             let outbound = TuicOutbound::new(
                 &node.server,
@@ -84,7 +77,7 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::{TransportConfig, TransportType, TlsConfig};
+    use crate::config::model::{TlsConfig, TransportConfig, TransportType};
 
     #[test]
     fn test_create_vless_outbound() {

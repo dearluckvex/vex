@@ -1,10 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
+use super::ProxyStats;
 use super::connector::SharedOutbound;
-use super::{ProxyStats};
 
 /// SOCKS5 proxy server.
 pub struct Socks5Server {
@@ -129,8 +129,15 @@ async fn handle_socks5(mut stream: TcpStream, outbound: SharedOutbound) -> Resul
             match outbound.connect(&host, port).await {
                 Ok(mut remote) => {
                     stream.write_all(&socks5_reply(0x00)).await?; // success
-                    let (up, down) = tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
-                    tracing::trace!("SOCKS5 relay {}:{} done: up={} down={}", host, port, up, down);
+                    let (up, down) =
+                        tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
+                    tracing::trace!(
+                        "SOCKS5 relay {}:{} done: up={} down={}",
+                        host,
+                        port,
+                        up,
+                        down
+                    );
                 }
                 Err(e) => {
                     stream.write_all(&socks5_reply(0x04)).await?; // host unreachable
@@ -192,7 +199,9 @@ mod tests {
 
         let stats = ProxyStats::default();
         let outbound = SharedOutbound(Arc::new(DirectOutbound));
-        let server = Socks5Server::bind("127.0.0.1", 0, outbound, stats).await.unwrap();
+        let server = Socks5Server::bind("127.0.0.1", 0, outbound, stats)
+            .await
+            .unwrap();
         let socks_port = server.local_port();
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -236,7 +245,9 @@ mod tests {
 
         let stats = ProxyStats::default();
         let outbound = SharedOutbound(Arc::new(DirectOutbound));
-        let server = Socks5Server::bind("127.0.0.1", 0, outbound, stats).await.unwrap();
+        let server = Socks5Server::bind("127.0.0.1", 0, outbound, stats)
+            .await
+            .unwrap();
         let socks_port = server.local_port();
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

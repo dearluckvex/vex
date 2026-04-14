@@ -2,11 +2,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use shadowsocks::ProxyClientStream;
 use shadowsocks::config::{ServerAddr, ServerConfig, ServerType};
 use shadowsocks::context::Context;
 use shadowsocks::crypto::CipherKind;
-use shadowsocks::ProxyClientStream;
 
 use super::connector::{BoxProxyStream, Outbound};
 
@@ -42,12 +42,8 @@ impl Outbound for SsOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let addr = shadowsocks::relay::Address::DomainNameAddress(host.to_string(), port);
         Box::pin(async move {
-            let stream = ProxyClientStream::connect(
-                self.context.clone(),
-                &self.server_config,
-                addr,
-            )
-            .await?;
+            let stream =
+                ProxyClientStream::connect(self.context.clone(), &self.server_config, addr).await?;
 
             Ok(Box::new(stream) as BoxProxyStream)
         })
@@ -85,10 +81,7 @@ mod tests {
     #[test]
     fn test_ss_outbound_aead_2022() {
         // AEAD 2022 ciphers require base64-encoded keys of specific length
-        let key = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &[0u8; 32],
-        );
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 32]);
         let outbound = SsOutbound::new("127.0.0.1", 8388, "2022-blake3-aes-256-gcm", &key);
         assert!(outbound.is_ok());
     }
@@ -101,7 +94,10 @@ mod tests {
 
     #[test]
     fn test_normalize_cipher() {
-        assert_eq!(normalize_ss_cipher("chacha20-poly1305"), "chacha20-ietf-poly1305");
+        assert_eq!(
+            normalize_ss_cipher("chacha20-poly1305"),
+            "chacha20-ietf-poly1305"
+        );
         assert_eq!(normalize_ss_cipher("aes-256-gcm"), "aes-256-gcm");
     }
 }

@@ -96,10 +96,7 @@ pub fn detect_format(content: &str) -> SubFormat {
 }
 
 fn looks_like_base64(content: &str) -> bool {
-    let clean: String = content
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let clean: String = content.chars().filter(|c| !c.is_whitespace()).collect();
 
     if clean.is_empty() {
         return false;

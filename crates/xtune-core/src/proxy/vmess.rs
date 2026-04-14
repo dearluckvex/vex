@@ -3,9 +3,9 @@ use std::io;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, KeyInit as AesKeyInit};
 use aes_gcm::Aes128Gcm;
-use anyhow::{bail, Result};
+use aes_gcm::aead::{Aead, KeyInit as AesKeyInit};
+use anyhow::{Result, bail};
 use hmac::{Hmac, Mac};
 use md5::{Digest as _, Md5};
 use rand::Rng;
@@ -269,8 +269,14 @@ fn build_vmess_header(
     // AEAD encrypt the header
 
     // Step 1: Derive header length encryption key and nonce
-    let header_length_key_material = kdf(&cmd_key, &[b"VMess Header AEAD Key Length", &auth_id, &nonce]);
-    let header_length_nonce_material = kdf(&cmd_key, &[b"VMess Header AEAD Nonce Length", &auth_id, &nonce]);
+    let header_length_key_material = kdf(
+        &cmd_key,
+        &[b"VMess Header AEAD Key Length", &auth_id, &nonce],
+    );
+    let header_length_nonce_material = kdf(
+        &cmd_key,
+        &[b"VMess Header AEAD Nonce Length", &auth_id, &nonce],
+    );
 
     let header_length_key: [u8; 16] = header_length_key_material[..16].try_into().unwrap();
     let header_length_nonce: [u8; 12] = header_length_nonce_material[..12].try_into().unwrap();
@@ -362,20 +368,13 @@ impl VMessChunkCipher {
         match security {
             VMessSecurity::Aes128Gcm | VMessSecurity::Auto => {
                 let cipher = Aes128Gcm::new_from_slice(key).unwrap();
-                VMessChunkCipher::Aes128Gcm {
-                    cipher,
-                    iv: *iv,
-                }
+                VMessChunkCipher::Aes128Gcm { cipher, iv: *iv }
             }
             VMessSecurity::Chacha20Poly1305 => {
                 use chacha20poly1305::KeyInit;
                 let key32 = generate_chacha_key(key);
-                let cipher =
-                    chacha20poly1305::ChaCha20Poly1305::new_from_slice(&key32).unwrap();
-                VMessChunkCipher::Chacha20Poly1305 {
-                    cipher,
-                    iv: *iv,
-                }
+                let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(&key32).unwrap();
+                VMessChunkCipher::Chacha20Poly1305 { cipher, iv: *iv }
             }
             VMessSecurity::None | VMessSecurity::Zero => VMessChunkCipher::None,
         }
@@ -629,8 +628,7 @@ mod tests {
 
     #[test]
     fn test_vmess_cmd_key() {
-        let uuid = uuid::Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811")
-            .unwrap();
+        let uuid = uuid::Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811").unwrap();
         let key = vmess_cmd_key(uuid.as_bytes());
         // Just verify it produces a deterministic 16-byte key
         assert_eq!(key.len(), 16);
@@ -640,8 +638,7 @@ mod tests {
 
     #[test]
     fn test_create_auth_id() {
-        let uuid = uuid::Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811")
-            .unwrap();
+        let uuid = uuid::Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811").unwrap();
         let cmd_key = vmess_cmd_key(uuid.as_bytes());
         let auth_id = create_auth_id(&cmd_key, 1000000);
         assert_eq!(auth_id.len(), 16);
@@ -671,8 +668,7 @@ mod tests {
 
     #[test]
     fn test_build_header() {
-        let uuid = uuid::Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811")
-            .unwrap();
+        let uuid = uuid::Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811").unwrap();
         let body_key = [1u8; 16];
         let body_iv = [2u8; 16];
 
@@ -728,7 +724,10 @@ mod tests {
 
     #[test]
     fn test_make_aead_nonce() {
-        let iv = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+        let iv = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10,
+        ];
         let nonce = make_aead_nonce(&iv, 42);
         assert_eq!(nonce[0], 0); // 42 >> 8
         assert_eq!(nonce[1], 42); // 42 & 0xFF
