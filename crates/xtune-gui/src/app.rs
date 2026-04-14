@@ -693,12 +693,18 @@ impl AppState {
 impl AppState {
     fn render_content(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_view.clone();
-        div().flex_1().h_full().p_6().child(match active {
-            ActiveView::Home => self.render_home(cx).into_any_element(),
-            ActiveView::Nodes => self.render_nodes(cx).into_any_element(),
-            ActiveView::Config => self.render_config(cx).into_any_element(),
-            ActiveView::Settings => self.render_settings(cx).into_any_element(),
-        })
+        div()
+            .id("main-content")
+            .flex_1()
+            .h_full()
+            .overflow_y_scroll()
+            .p_6()
+            .child(match active {
+                ActiveView::Home => self.render_home(cx).into_any_element(),
+                ActiveView::Nodes => self.render_nodes(cx).into_any_element(),
+                ActiveView::Config => self.render_config(cx).into_any_element(),
+                ActiveView::Settings => self.render_settings(cx).into_any_element(),
+            })
     }
 }
 
