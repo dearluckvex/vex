@@ -25,7 +25,10 @@ pub use proxy::speedtest::{SpeedTestResult, latency_test_node, speed_test_node};
 pub use proxy::ss::SsOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::tuic::TuicOutbound;
-pub use proxy::tun::{TunProxy, TunRouteGuard, TunRouteInfo, resolve_to_ipv4, setup_tun_routes};
+pub use proxy::tun::{
+    TunProxy, TunRouteGuard, TunRouteInfo, resolve_to_ipv4, setup_tun_routes, tun_requirements,
+    tun_supported,
+};
 pub use proxy::vless::VlessOutbound;
 pub use proxy::vmess::VMessOutbound;
 pub use proxy::{ProxyState, ProxyStats};

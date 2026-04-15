@@ -10,10 +10,11 @@ use xtune_core::config::model::{
 };
 use xtune_core::proxy::ProxyStats;
 use xtune_core::{
-    ProxyMode, ProxyService, RoutingOutbound, Router, SharedOutbound, TunProxy, TunRouteGuard,
+    ProxyMode, ProxyService, RoutingOutbound, Router, SharedOutbound, TunProxy,
     china_direct_ruleset, clear_system_proxy as clear_os_proxy, create_outbound,
     fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names,
     resolve_to_ipv4, set_system_proxy as set_os_proxy, setup_tun_routes, system_proxy_supported,
+    tun_requirements, tun_supported,
 };
 
 // Color palette
@@ -591,6 +592,7 @@ impl AppState {
 
     // === TUN Mode ===
 
+    #[allow(dead_code)]
     fn toggle_tun(&mut self, cx: &mut Context<Self>) {
         if self.tun_enabled {
             self.stop_tun(cx);
@@ -707,6 +709,61 @@ impl AppState {
             let _ = tx.send(());
         }
         self.tun_status = "Stopping TUN...".to_string();
+        cx.notify();
+    }
+
+    // === Node Management ===
+
+    fn delete_node(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.nodes.len() {
+            return;
+        }
+        // Stop proxy if deleting the active node
+        if self.proxy_running && self.active_proxy_node == Some(index) {
+            self.stop_proxy(cx);
+        }
+        self.nodes.remove(index);
+        // Adjust selected/active indices
+        if let Some(sel) = self.selected_node {
+            if sel == index {
+                self.selected_node = None;
+            } else if sel > index {
+                self.selected_node = Some(sel - 1);
+            }
+        }
+        if let Some(act) = self.active_proxy_node {
+            if act == index {
+                self.active_proxy_node = None;
+            } else if act > index {
+                self.active_proxy_node = Some(act - 1);
+            }
+        }
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn sort_nodes_by_latency(&mut self, cx: &mut Context<Self>) {
+        // Remember selected/active node names before sorting
+        let selected_name = self.selected_node.and_then(|i| self.nodes.get(i)).map(|n| n.name.clone());
+        let active_name = self.active_proxy_node.and_then(|i| self.nodes.get(i)).map(|n| n.name.clone());
+
+        self.nodes.sort_by(|a, b| {
+            match (a.latency_ms, b.latency_ms) {
+                (Some(a_ms), Some(b_ms)) => a_ms.cmp(&b_ms),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        // Restore selected/active indices by name
+        if let Some(name) = selected_name {
+            self.selected_node = self.nodes.iter().position(|n| n.name == name);
+        }
+        if let Some(name) = active_name {
+            self.active_proxy_node = self.nodes.iter().position(|n| n.name == name);
+        }
+        self.persist_gui_state();
         cx.notify();
     }
 
@@ -956,6 +1013,16 @@ impl AppState {
             .as_ref()
             .map(|s| s.total_connections())
             .unwrap_or(0);
+        let bytes_up = self
+            .proxy_stats
+            .as_ref()
+            .map(|s| s.bytes_sent())
+            .unwrap_or(0);
+        let bytes_down = self
+            .proxy_stats
+            .as_ref()
+            .map(|s| s.bytes_received())
+            .unwrap_or(0);
 
         let cur_mode = self.proxy_mode.clone();
 
@@ -1080,7 +1147,7 @@ impl AppState {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .mb_3()
-                            .child("🔒 TUN Mode (Global Proxy)"),
+                            .child("🔒 TUN Mode (Global Transparent Proxy)"),
                     )
                     .child(
                         div()
@@ -1096,13 +1163,17 @@ impl AppState {
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.stop_tun(cx);
                                         }))
-                                } else {
+                                } else if tun_supported() {
                                     Button::new("tun-toggle")
-                                        .label("⭕ Enable TUN (requires root)".to_string())
+                                        .label(format!("⭕ Enable TUN ({})", tun_requirements()))
                                         .ghost()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.start_tun(cx);
                                         }))
+                                } else {
+                                    Button::new("tun-toggle")
+                                        .label("⛔ TUN not supported on this platform".to_string())
+                                        .ghost()
                                 }
                             }),
                     )
@@ -1242,7 +1313,9 @@ impl AppState {
                             .gap_6()
                             .child(self.stat_item("Active", &active_conn.to_string()))
                             .child(self.stat_item("Total", &total_conn.to_string()))
-                            .child(self.stat_item("Nodes", &self.nodes.len().to_string())),
+                            .child(self.stat_item("Nodes", &self.nodes.len().to_string()))
+                            .child(self.stat_item("↑ Upload", &format_bytes(bytes_up)))
+                            .child(self.stat_item("↓ Download", &format_bytes(bytes_down))),
                     ),
             )
             // Protocols card
@@ -1274,10 +1347,11 @@ impl AppState {
     fn card(&self) -> Div {
         div()
             .p_4()
-            .rounded_lg()
+            .rounded_xl()
             .bg(rgb(BG_CARD))
             .border_1()
             .border_color(rgb(BORDER_COLOR))
+            .shadow_sm()
     }
 
     fn info_row(&self, label: &str, value: &str) -> Div {
@@ -1340,12 +1414,26 @@ impl AppState {
                         .child(format!("Nodes ({})", node_count)),
                 )
                 .child(
-                    Button::new("test-all-btn")
-                        .label("⚡ Test All".to_string())
-                        .primary()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.test_all_latency(cx);
-                        })),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            Button::new("sort-latency-btn")
+                                .label("📊 Sort by Latency".to_string())
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.sort_nodes_by_latency(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("test-all-btn")
+                                .label("⚡ Test All".to_string())
+                                .primary()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.test_all_latency(cx);
+                                })),
+                        ),
                 ),
         );
 
@@ -1452,10 +1540,11 @@ impl AppState {
             .items_center()
             .px_4()
             .py_3()
-            .rounded_lg()
+            .rounded_xl()
             .bg(bg)
             .border_1()
             .border_color(border)
+            .shadow_sm()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_node(index, cx);
@@ -1514,6 +1603,14 @@ impl AppState {
                     button.ghost()
                 }
             })
+            .child(
+                Button::new(("delete-node", index))
+                    .label("✕".to_string())
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.delete_node(index, cx);
+                    })),
+            )
     }
 }
 
@@ -1884,6 +1981,21 @@ impl AppState {
 }
 
 // === Helpers ===
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
 
 fn ui_font() -> Font {
     let mut font = font("Noto Sans CJK SC");
