@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::config::model::{Node, ProxyProtocol};
 
 use super::connector::{DirectOutbound, SharedOutbound};
+use super::hysteria2::Hysteria2Outbound;
 use super::ss::{SsOutbound, normalize_ss_cipher};
 use super::trojan::TrojanOutbound;
 use super::tuic::TuicOutbound;
@@ -64,10 +65,14 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
         }
 
         ProxyProtocol::Hysteria2 { password, .. } => {
-            anyhow::bail!(
-                "Hysteria2 protocol not yet implemented (node uses password={}...)",
-                &password[..password.len().min(4)]
-            );
+            let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
+            let outbound = Hysteria2Outbound::new(
+                &node.server,
+                node.port,
+                password,
+                tls_config,
+            )?;
+            Ok(SharedOutbound(Arc::new(outbound)))
         }
     }
 }

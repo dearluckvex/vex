@@ -31,7 +31,10 @@ pub use proxy::tun::{
 };
 pub use proxy::vless::VlessOutbound;
 pub use proxy::vmess::VMessOutbound;
+pub use proxy::hysteria2::Hysteria2Outbound;
 pub use proxy::{ProxyState, ProxyStats};
+
+pub use dns::{DnsConfig, DnsGroup, DnsResolver, DnsServer, china_domain_suffixes, china_split_dns_config};
 
 pub use router::{GeoIpDb, MatchRule, RouteAction, Router, RuleSet, china_direct_ruleset};
 pub use system_proxy::{

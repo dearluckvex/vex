@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use xtune_core::config::model::{
-    AppConfig, Node, ProxyProtocol, Subscription, TransportConfig, TransportType,
+    AppConfig, Node, ProxyProtocol, RoutingRule, Subscription, TransportConfig, TransportType,
 };
 use xtune_core::proxy::ProxyStats;
 use xtune_core::{
@@ -79,6 +79,12 @@ pub struct AppState {
     tun_enabled: bool,
     tun_status: String,
     tun_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+
+    // Rules management
+    rules: Vec<RoutingRule>,
+    rule_type_input: Entity<InputState>,
+    rule_pattern_input: Entity<InputState>,
+    rule_target_input: Entity<InputState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +92,7 @@ pub enum ActiveView {
     Home,
     Nodes,
     Config,
+    Rules,
     Settings,
 }
 
@@ -144,6 +151,15 @@ impl AppState {
                 .default_value(persisted.http_port.to_string())
         });
         let (system_proxy_enabled, system_proxy_status) = current_system_proxy_state();
+        let rule_type_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("domain-suffix")
+        });
+        let rule_pattern_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("google.com")
+        });
+        let rule_target_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("proxy")
+        });
 
         Self {
             active_view: ActiveView::Home,
@@ -176,6 +192,10 @@ impl AppState {
             tun_enabled: false,
             tun_status: "Disabled".to_string(),
             tun_stop_tx: None,
+            rules: persisted.rules.clone(),
+            rule_type_input,
+            rule_pattern_input,
+            rule_target_input,
         }
     }
 
@@ -837,7 +857,7 @@ impl AppState {
             nodes: self.nodes.clone(),
             active_node: self.selected_node,
             subscriptions: Vec::new(),
-            rules: Vec::new(),
+            rules: self.rules.clone(),
         };
 
         if let Err(err) = save_gui_state(&config) {
@@ -901,6 +921,7 @@ impl AppState {
                             .child(self.nav_item("🏠  Home", ActiveView::Home, &active, cx))
                             .child(self.nav_item("📡  Nodes", ActiveView::Nodes, &active, cx))
                             .child(self.nav_item("⬇️  Config", ActiveView::Config, &active, cx))
+                            .child(self.nav_item("📋  Rules", ActiveView::Rules, &active, cx))
                             .child(self.nav_item(
                                 "⚙️  Settings",
                                 ActiveView::Settings,
@@ -965,6 +986,7 @@ impl AppState {
                 ActiveView::Home => self.render_home(cx).into_any_element(),
                 ActiveView::Nodes => self.render_nodes(cx).into_any_element(),
                 ActiveView::Config => self.render_config(cx).into_any_element(),
+                ActiveView::Rules => self.render_rules(cx).into_any_element(),
                 ActiveView::Settings => self.render_settings(cx).into_any_element(),
             })
     }
@@ -1764,6 +1786,355 @@ impl AppState {
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(count.to_string()),
+            )
+    }
+}
+
+// === Rules View ===
+
+impl AppState {
+    fn add_rule(&mut self, cx: &mut Context<Self>) {
+        let rule_type = self.rule_type_input.read(cx).value().to_string();
+        let pattern = self.rule_pattern_input.read(cx).value().to_string();
+        let target = self.rule_target_input.read(cx).value().to_string();
+
+        if rule_type.trim().is_empty() || pattern.trim().is_empty() || target.trim().is_empty() {
+            return;
+        }
+
+        let valid_types = [
+            "domain", "domain-suffix", "domain-keyword", "ip-cidr", "geoip", "match",
+        ];
+        let valid_targets = ["direct", "proxy", "reject"];
+
+        if !valid_types.contains(&rule_type.trim()) {
+            return;
+        }
+        if !valid_targets.contains(&target.trim()) {
+            return;
+        }
+
+        self.rules.push(RoutingRule {
+            rule_type: rule_type.trim().to_string(),
+            pattern: pattern.trim().to_string(),
+            target: target.trim().to_string(),
+        });
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn delete_rule(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.rules.len() {
+            self.rules.remove(index);
+            self.persist_gui_state();
+            cx.notify();
+        }
+    }
+
+    fn move_rule_up(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index > 0 && index < self.rules.len() {
+            self.rules.swap(index, index - 1);
+            self.persist_gui_state();
+            cx.notify();
+        }
+    }
+
+    fn move_rule_down(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index + 1 < self.rules.len() {
+            self.rules.swap(index, index + 1);
+            self.persist_gui_state();
+            cx.notify();
+        }
+    }
+
+    fn load_china_rules(&mut self, cx: &mut Context<Self>) {
+        // Add the built-in China direct ruleset as explicit rules
+        let china_rules = vec![
+            RoutingRule { rule_type: "geoip".into(), pattern: "CN".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "cn".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "baidu.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "qq.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "taobao.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "aliyun.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "jd.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "163.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "bilibili.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "domain-suffix".into(), pattern: "zhihu.com".into(), target: "direct".into() },
+            RoutingRule { rule_type: "ip-cidr".into(), pattern: "10.0.0.0/8".into(), target: "direct".into() },
+            RoutingRule { rule_type: "ip-cidr".into(), pattern: "172.16.0.0/12".into(), target: "direct".into() },
+            RoutingRule { rule_type: "ip-cidr".into(), pattern: "192.168.0.0/16".into(), target: "direct".into() },
+            RoutingRule { rule_type: "match".into(), pattern: "*".into(), target: "proxy".into() },
+        ];
+        self.rules = china_rules;
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn clear_rules(&mut self, cx: &mut Context<Self>) {
+        self.rules.clear();
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn render_rules(&mut self, cx: &mut Context<Self>) -> Div {
+        let rule_count = self.rules.len();
+        let rule_type_input = self.rule_type_input.clone();
+        let rule_pattern_input = self.rule_pattern_input.clone();
+        let rule_target_input = self.rule_target_input.clone();
+
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            // Title
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("Routing Rules ({})", rule_count)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("load-china-rules")
+                                    .label("🇨🇳 Load China Direct".to_string())
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.load_china_rules(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("clear-rules")
+                                    .label("🗑 Clear All".to_string())
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.clear_rules(cx);
+                                    })),
+                            ),
+                    ),
+            )
+            // Add rule card
+            .child(
+                self.card()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .mb_3()
+                            .child("Add Rule"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("Type"))
+                                            .child(gpui_component::input::Input::new(&rule_type_input)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("Pattern"))
+                                            .child(gpui_component::input::Input::new(&rule_pattern_input)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("Target"))
+                                            .child(gpui_component::input::Input::new(&rule_target_input)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("add-rule-btn")
+                                            .label("+ Add Rule".to_string())
+                                            .primary()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.add_rule(cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_MUTED))
+                                    .mt_1()
+                                    .child("Types: domain, domain-suffix, domain-keyword, ip-cidr, geoip, match  |  Targets: direct, proxy, reject"),
+                            ),
+                    ),
+            );
+
+        // Rule list
+        if rule_count == 0 {
+            content = content.child(
+                self.card().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .py_8()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_lg()
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .child("No routing rules configured"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(TEXT_MUTED))
+                                .child("In Rule mode, built-in China direct rules are used. Add custom rules here to override."),
+                        ),
+                ),
+            );
+        } else {
+            let mut list = div().flex().flex_col().gap_1();
+            for i in 0..rule_count {
+                list = list.child(self.render_rule_item(i, cx));
+            }
+            content = content.child(list);
+        }
+
+        // Info card
+        content = content.child(
+            self.card()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .mb_2()
+                        .child("ℹ️ How Rules Work"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Rules are evaluated top-to-bottom; first match wins"))
+                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• \"direct\" = connect without proxy, \"proxy\" = use selected node, \"reject\" = block"))
+                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Custom rules apply when Proxy Mode is set to \"Rule\" on the Home tab"))
+                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Use ▲▼ arrows to reorder rules")),
+                ),
+        );
+
+        content
+    }
+
+    fn render_rule_item(&mut self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let rule = &self.rules[index];
+        let type_tag = match rule.rule_type.as_str() {
+            "domain" => Tag::primary().child("Domain"),
+            "domain-suffix" => Tag::info().child("Suffix"),
+            "domain-keyword" => Tag::warning().child("Keyword"),
+            "ip-cidr" => Tag::success().child("CIDR"),
+            "geoip" => Tag::danger().child("GeoIP"),
+            "match" => Tag::secondary().child("Match"),
+            _ => Tag::secondary().child(rule.rule_type.clone()),
+        };
+        let target_color = match rule.target.as_str() {
+            "direct" => rgb(SUCCESS_COLOR),
+            "proxy" => rgb(ACCENT),
+            "reject" => rgb(DANGER_COLOR),
+            _ => rgb(TEXT_SECONDARY),
+        };
+        let pattern = rule.pattern.clone();
+        let target = rule.target.clone();
+
+        div()
+            .id(SharedString::from(format!("rule-{}", index)))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_4()
+            .py_2()
+            .rounded_xl()
+            .bg(rgb(BG_CARD))
+            .border_1()
+            .border_color(rgb(BORDER_COLOR))
+            .shadow_sm()
+            .child(
+                div()
+                    .w(px(20.0))
+                    .text_xs()
+                    .text_color(rgb(TEXT_MUTED))
+                    .child(format!("#{}", index + 1)),
+            )
+            .child(div().mx_2().child(type_tag))
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .font(localized_font())
+                    .child(pattern),
+            )
+            .child(
+                div()
+                    .w(px(60.0))
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(target_color)
+                    .child(target),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .child(
+                        Button::new(("rule-up", index))
+                            .label("▲".to_string())
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.move_rule_up(index, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("rule-down", index))
+                            .label("▼".to_string())
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.move_rule_down(index, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("rule-del", index))
+                            .label("✕".to_string())
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.delete_rule(index, cx);
+                            })),
+                    ),
             )
     }
 }
