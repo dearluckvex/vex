@@ -5,6 +5,7 @@ pub mod router;
 pub mod system_proxy;
 
 pub use config::clash::parse_clash_config;
+pub use config::singbox::{parse_singbox_config, parse_singbox_outbound};
 pub use config::model::{
     AppConfig, Node, ProxyMode, ProxyProtocol, RoutingRule, Subscription, TransportConfig,
     TransportType, decode_display_name, normalize_node_names,

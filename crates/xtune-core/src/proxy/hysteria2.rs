@@ -139,7 +139,7 @@ impl Hysteria2Outbound {
         )
         .await
         .map_err(|_| anyhow::anyhow!(
-            "Hysteria2 connection to {}:{} timed out after 15s",
+            "Hysteria2 connection to {}:{} timed out (UDP may be blocked by firewall)",
             self.server, self.port
         ))??;
 

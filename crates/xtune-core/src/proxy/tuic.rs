@@ -202,7 +202,7 @@ impl TuicOutbound {
         )
         .await
         .map_err(|_| anyhow::anyhow!(
-            "TUIC QUIC connection to {}:{} timed out after 15s",
+            "TUIC QUIC connection to {}:{} timed out (UDP may be blocked by firewall)",
             self.server, self.port
         ))??;
 

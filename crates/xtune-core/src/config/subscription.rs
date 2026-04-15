@@ -4,12 +4,14 @@ use base64::engine::general_purpose;
 
 use super::clash;
 use super::model::*;
+use super::singbox;
 use super::v2ray;
 
 /// Subscription content format (auto-detected)
 #[derive(Debug, PartialEq)]
 pub enum SubFormat {
     Clash,
+    SingBox,
     V2Ray,
     Base64Lines,
     PlainLines,
@@ -49,6 +51,7 @@ pub fn parse_subscription_content(content: &str, format_hint: &str) -> Result<Ve
 
     match format_hint {
         "clash" => return clash::parse_clash_config(content),
+        "singbox" | "sing-box" => return singbox::parse_singbox_config(content),
         "v2ray" => return v2ray::parse_v2ray_config(content),
         "base64" => return parse_base64_lines(content),
         _ => {} // "auto" or unknown → auto-detect
@@ -60,6 +63,7 @@ pub fn parse_subscription_content(content: &str, format_hint: &str) -> Result<Ve
 
     match format {
         SubFormat::Clash => clash::parse_clash_config(content),
+        SubFormat::SingBox => singbox::parse_singbox_config(content),
         SubFormat::V2Ray => v2ray::parse_v2ray_config(content),
         SubFormat::Base64Lines => parse_base64_lines(content),
         SubFormat::PlainLines => parse_plain_lines(content),
@@ -73,6 +77,11 @@ pub fn detect_format(content: &str) -> SubFormat {
     // Check for Clash YAML
     if clash::is_clash_config(trimmed) {
         return SubFormat::Clash;
+    }
+
+    // Check for sing-box JSON (before generic V2Ray check)
+    if trimmed.starts_with('{') && singbox::is_singbox_config(trimmed) {
+        return SubFormat::SingBox;
     }
 
     // Check for V2Ray JSON
@@ -125,9 +134,12 @@ fn parse_base64_lines(content: &str) -> Result<Vec<Node>> {
 
     let text = String::from_utf8(decoded).context("Invalid UTF-8 after Base64 decode")?;
 
-    // The decoded content might be Clash YAML or plain URI lines
+    // The decoded content might be Clash YAML, sing-box JSON, or plain URI lines
     if clash::is_clash_config(&text) {
         return clash::parse_clash_config(&text);
+    }
+    if singbox::is_singbox_config(&text) {
+        return singbox::parse_singbox_config(&text);
     }
 
     parse_plain_lines(&text)
