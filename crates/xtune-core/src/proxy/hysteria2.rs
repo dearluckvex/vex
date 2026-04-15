@@ -113,20 +113,41 @@ impl Hysteria2Outbound {
             quinn::congestion::BbrConfig::default(),
         ));
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+        transport.max_idle_timeout(Some(
+            quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
+        ));
         transport.receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
         transport.send_window(16 * 1024 * 1024);
         client_config.transport_config(Arc::new(transport));
 
         let addr = resolve_server(&self.server, self.port).await?;
+        tracing::debug!("Hysteria2 resolved {}:{} -> {}", self.server, self.port, addr);
 
-        let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
+        // Bind to matching address family
+        let bind_addr: std::net::SocketAddr = if addr.is_ipv4() {
+            "0.0.0.0:0".parse()?
+        } else {
+            "[::]:0".parse()?
+        };
+        let mut endpoint = quinn::Endpoint::client(bind_addr)?;
         endpoint.set_default_client_config(client_config);
 
-        let connection = endpoint.connect(addr, &self.sni)?.await?;
+        let connecting = endpoint.connect(addr, &self.sni)?;
+        let connection = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            connecting,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!(
+            "Hysteria2 connection to {}:{} timed out after 15s",
+            self.server, self.port
+        ))??;
+
         tracing::info!(
-            "Hysteria2 QUIC connection established to {}:{}",
+            "Hysteria2 QUIC connection established to {}:{} ({})",
             self.server,
-            self.port
+            self.port,
+            addr,
         );
 
         Ok((endpoint, connection))
@@ -292,13 +313,15 @@ async fn write_varint(writer: &mut quinn::SendStream, value: u64) -> Result<()> 
     Ok(())
 }
 
-/// Resolve server hostname to SocketAddr.
+/// Resolve server hostname to SocketAddr, preferring IPv4.
 async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr> {
     use tokio::net::lookup_host;
     let addrs: Vec<_> = lookup_host(format!("{}:{}", server, port)).await?.collect();
     addrs
-        .into_iter()
-        .next()
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(addrs.first())
+        .copied()
         .ok_or_else(|| anyhow::anyhow!("Failed to resolve {}", server))
 }
 

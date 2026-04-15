@@ -109,10 +109,14 @@ impl TuicOutbound {
             if conn.close_reason().is_none() {
                 return Ok(conn.clone());
             }
+            tracing::debug!("TUIC connection closed, reconnecting...");
         }
 
         // Create new connection (endpoint + connection)
-        let (endpoint, conn) = self.create_connection().await?;
+        let (endpoint, conn) = self.create_connection().await.map_err(|e| {
+            tracing::error!("TUIC connection to {}:{} failed: {}", self.server, self.port, e);
+            e
+        })?;
         *guard = Some((endpoint, conn.clone()));
 
         // Authenticate
@@ -171,21 +175,42 @@ impl TuicOutbound {
         }
         // Keep-alive for long-lived connections
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+        // Max idle timeout to detect dead connections
+        transport.max_idle_timeout(Some(
+            quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
+        ));
         client_config.transport_config(Arc::new(transport));
 
-        // Resolve server address
+        // Resolve server address — prefer IPv4 to match the binding address
         let addr = resolve_server(&self.server, self.port).await?;
+        tracing::debug!("TUIC resolved {}:{} -> {}", self.server, self.port, addr);
 
-        // Create endpoint (bind to any local address)
-        let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
+        // Bind to matching address family (IPv4 or IPv6)
+        let bind_addr: SocketAddr = if addr.is_ipv4() {
+            "0.0.0.0:0".parse()?
+        } else {
+            "[::]:0".parse()?
+        };
+        let mut endpoint = quinn::Endpoint::client(bind_addr)?;
         endpoint.set_default_client_config(client_config);
 
-        // Connect
-        let connection = endpoint.connect(addr, &self.sni)?.await?;
+        // Connect with timeout
+        let connecting = endpoint.connect(addr, &self.sni)?;
+        let connection = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            connecting,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!(
+            "TUIC QUIC connection to {}:{} timed out after 15s",
+            self.server, self.port
+        ))??;
+
         tracing::info!(
-            "TUIC QUIC connection established to {}:{}",
+            "TUIC QUIC connection established to {}:{} ({})",
             self.server,
-            self.port
+            self.port,
+            addr,
         );
 
         Ok((endpoint, connection))
@@ -345,13 +370,16 @@ fn export_auth_token(
     Ok(token)
 }
 
-/// Resolve server hostname to SocketAddr.
+/// Resolve server hostname to SocketAddr, preferring IPv4.
 async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr> {
     use tokio::net::lookup_host;
     let addrs: Vec<_> = lookup_host(format!("{}:{}", server, port)).await?.collect();
+    // Prefer IPv4 to avoid IPv4/IPv6 mismatch issues on Linux
     addrs
-        .into_iter()
-        .next()
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(addrs.first())
+        .copied()
         .ok_or_else(|| anyhow::anyhow!("Failed to resolve {}", server))
 }
 

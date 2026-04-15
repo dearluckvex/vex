@@ -187,6 +187,10 @@ fn convert_clash_proxy(proxy: &ClashProxy) -> Result<Node> {
 
 fn build_transport(proxy: &ClashProxy) -> Option<TransportConfig> {
     let network = proxy.network.as_deref().unwrap_or("tcp");
+    let proxy_type = proxy.proxy_type.as_str();
+
+    // TUIC and Hysteria2 always use QUIC (TLS is implicit)
+    let force_tls = matches!(proxy_type, "tuic" | "hysteria2" | "hy2");
 
     // Reality transport
     if let Some(ref reality) = proxy.reality_opts {
@@ -204,7 +208,7 @@ fn build_transport(proxy: &ClashProxy) -> Option<TransportConfig> {
         }
     }
 
-    let has_tls = proxy.tls;
+    let has_tls = proxy.tls || force_tls;
     let has_ws = network == "ws";
 
     if !has_tls && !has_ws {
