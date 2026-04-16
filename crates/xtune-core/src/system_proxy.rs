@@ -2,6 +2,13 @@ use anyhow::{Context, Result, bail};
 
 pub const DEFAULT_BYPASS: &str = "localhost,127.0.0.1,::1";
 
+/// Platform-appropriate bypass list for system proxy settings.
+/// Windows uses semicolons and `<local>` keyword.
+#[cfg(target_os = "windows")]
+pub const PLATFORM_BYPASS: &str = "localhost;127.0.0.1;::1;<local>";
+#[cfg(not(target_os = "windows"))]
+pub const PLATFORM_BYPASS: &str = "localhost,127.0.0.1,::1";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemProxyConfig {
     pub enabled: bool,
@@ -48,7 +55,7 @@ pub fn get_system_proxy() -> Result<SystemProxyConfig> {
 }
 
 pub fn set_system_proxy(host: &str, port: u16) -> Result<()> {
-    set_system_proxy_with_bypass(host, port, DEFAULT_BYPASS)
+    set_system_proxy_with_bypass(host, port, PLATFORM_BYPASS)
 }
 
 pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Result<()> {
