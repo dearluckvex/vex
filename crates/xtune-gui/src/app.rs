@@ -89,6 +89,10 @@ pub struct AppState {
     rule_pattern_input: Entity<InputState>,
     rule_target_input: Entity<InputState>,
 
+    // Node search filter
+    node_filter: String,
+    node_filter_input: Entity<InputState>,
+
     // Log viewer
     log_buffer: SharedLogBuffer,
 }
@@ -190,6 +194,8 @@ impl AppState {
         let rule_type_input = cx.new(|cx| InputState::new(window, cx).placeholder("domain-suffix"));
         let rule_pattern_input = cx.new(|cx| InputState::new(window, cx).placeholder("google.com"));
         let rule_target_input = cx.new(|cx| InputState::new(window, cx).placeholder("proxy"));
+        let node_filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search nodes..."));
 
         Self {
             active_view: ActiveView::Home,
@@ -228,6 +234,8 @@ impl AppState {
             rule_type_input,
             rule_pattern_input,
             rule_target_input,
+            node_filter: String::new(),
+            node_filter_input,
             log_buffer,
         }
     }
@@ -906,6 +914,20 @@ impl AppState {
         cx.notify();
     }
 
+    fn delete_all_nodes(&mut self, cx: &mut Context<Self>) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        if self.proxy_running {
+            self.stop_proxy(cx);
+        }
+        self.nodes.clear();
+        self.selected_node = None;
+        self.active_proxy_node = None;
+        self.persist_gui_state();
+        cx.notify();
+    }
+
     fn sort_nodes_by_latency(&mut self, cx: &mut Context<Self>) {
         // Remember selected/active node names before sorting
         let selected_name = self
@@ -1568,41 +1590,84 @@ impl AppState {
     fn render_nodes(&mut self, cx: &mut Context<Self>) -> Div {
         let node_count = self.nodes.len();
 
-        let mut content = div().flex().flex_col().gap_4().child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_2xl()
-                        .font_weight(FontWeight::BOLD)
-                        .child(format!("Nodes ({})", node_count)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
-                            Button::new("sort-latency-btn")
-                                .label("📊 Sort by Latency".to_string())
-                                .ghost()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.sort_nodes_by_latency(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("test-all-btn")
-                                .label("⚡ Test All".to_string())
-                                .primary()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.test_all_latency(cx);
-                                })),
-                        ),
-                ),
-        );
+        // Read and apply filter
+        let filter_text = self.node_filter_input.read(cx).value().trim().to_lowercase();
+        if filter_text != self.node_filter {
+            self.node_filter = filter_text.clone();
+        }
+        let filtered_indices: Vec<usize> = if filter_text.is_empty() {
+            (0..node_count).collect()
+        } else {
+            (0..node_count)
+                .filter(|&i| {
+                    let n = &self.nodes[i];
+                    n.name.to_lowercase().contains(&filter_text)
+                        || n.server.to_lowercase().contains(&filter_text)
+                        || protocol_short_name(&n.protocol)
+                            .to_lowercase()
+                            .contains(&filter_text)
+                })
+                .collect()
+        };
+        let shown_count = filtered_indices.len();
+        let node_filter_input = self.node_filter_input.clone();
+
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child(if filter_text.is_empty() {
+                                format!("Nodes ({})", node_count)
+                            } else {
+                                format!("Nodes ({}/{})", shown_count, node_count)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("sort-latency-btn")
+                                    .label("📊 Sort by Latency".to_string())
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sort_nodes_by_latency(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("test-all-btn")
+                                    .label("⚡ Test All".to_string())
+                                    .primary()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.test_all_latency(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("delete-all-btn")
+                                    .label("🗑 Delete All".to_string())
+                                    .danger()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.delete_all_nodes(cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .child(gpui_component::input::Input::new(&node_filter_input).w_full()),
+            );
 
         if node_count == 0 {
             content = content.child(
@@ -1629,7 +1694,7 @@ impl AppState {
             );
         } else {
             let mut list = div().flex().flex_col().gap_1();
-            for i in 0..node_count {
+            for &i in &filtered_indices {
                 list = list.child(self.render_node_item(i, cx));
             }
             content = content.child(list);
@@ -2954,6 +3019,17 @@ fn protocol_name(protocol: &ProxyProtocol) -> &'static str {
         ProxyProtocol::Tuic { .. } => "TUIC v5",
         ProxyProtocol::Trojan { .. } => "Trojan",
         ProxyProtocol::Hysteria2 { .. } => "Hysteria2",
+    }
+}
+
+fn protocol_short_name(protocol: &ProxyProtocol) -> &'static str {
+    match protocol {
+        ProxyProtocol::Shadowsocks { .. } => "ss",
+        ProxyProtocol::VMess { .. } => "vmess",
+        ProxyProtocol::VLess { .. } => "vless",
+        ProxyProtocol::Tuic { .. } => "tuic",
+        ProxyProtocol::Trojan { .. } => "trojan",
+        ProxyProtocol::Hysteria2 { .. } => "hy2",
     }
 }
 
