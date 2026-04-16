@@ -994,7 +994,16 @@ fn tun_creation_failure_message() -> String {
     match current_privilege_status() {
         PrivilegeStatus::Missing => format!("Failed to create TUN device. {}", tun_requirements()),
         PrivilegeStatus::Privileged => {
-            "Failed to create TUN device. The TUN driver or adapter may be unavailable on this system.".to_string()
+            #[cfg(target_os = "windows")]
+            {
+                "Failed to create TUN device. The WinTun driver may not be installed.\n\
+                 Download wintun.dll from https://www.wintun.net/ and place it in the same folder as the application."
+                    .to_string()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                "Failed to create TUN device. The TUN driver or adapter may be unavailable on this system.".to_string()
+            }
         }
         PrivilegeStatus::Unknown => format!(
             "Failed to create TUN device. Ensure the TUN driver is installed and {}",

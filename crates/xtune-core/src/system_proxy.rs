@@ -27,14 +27,24 @@ pub fn system_proxy_supported() -> bool {
 
 pub fn get_system_proxy() -> Result<SystemProxyConfig> {
     ensure_supported()?;
-    sysproxy::Sysproxy::get_system_proxy()
-        .map(Into::into)
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to read system proxy: {}. On Windows, try running as Administrator.",
-                e
-            )
-        })
+    match sysproxy::Sysproxy::get_system_proxy() {
+        Ok(proxy) => Ok(proxy.into()),
+        Err(e) => {
+            let msg = format!("{}", e);
+            if msg.contains("parse") {
+                // The sysproxy crate can't parse per-protocol proxy formats
+                // (e.g., "http=host:port;https=host:port"). Treat as disabled.
+                Ok(SystemProxyConfig {
+                    enabled: false,
+                    host: String::new(),
+                    port: 0,
+                    bypass: String::new(),
+                })
+            } else {
+                Err(anyhow::anyhow!("failed to read system proxy: {}", e))
+            }
+        }
+    }
 }
 
 pub fn set_system_proxy(host: &str, port: u16) -> Result<()> {
