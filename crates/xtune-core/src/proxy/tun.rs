@@ -7,6 +7,7 @@ use etherparse::Icmpv4Header;
 use ipstack::{IpNumber, IpStackConfig, IpStackStream, TcpConfig, TcpOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
+use tun::AbstractDevice;
 
 use super::connector::SharedOutbound;
 
@@ -42,6 +43,8 @@ impl TunProxy {
     /// After calling `start()`, the caller should set up system routes via
     /// [`setup_tun_routes`] to direct traffic through the TUN device.
     pub fn start(outbound: SharedOutbound) -> Result<Self> {
+        validate_tun_environment()?;
+
         let mut tun_config = tun::Configuration::default();
         tun_config
             .address(TUN_IPV4)
@@ -55,10 +58,12 @@ impl TunProxy {
             p_cfg.ensure_root_privileges(true);
         });
 
-        let tun_dev = tun::create_as_async(&tun_config)
-            .context("Failed to create TUN device (root/admin required)")?;
+        let tun_dev =
+            tun::create_as_async(&tun_config).with_context(tun_creation_failure_message)?;
 
-        let tun_name = get_tun_name().unwrap_or_else(|| default_tun_name().to_string());
+        let tun_name = tun_dev
+            .tun_name()
+            .unwrap_or_else(|_| default_tun_name().to_string());
 
         tracing::info!("TUN device created: {} ({})", tun_name, TUN_IPV4);
 
@@ -189,8 +194,7 @@ async fn handle_tun_stream(stream: IpStackStream, outbound: SharedOutbound) -> R
             if pkt.src_addr().is_ipv4() && pkt.ip_protocol() == IpNumber::ICMP {
                 if let Ok((icmp_header, req_payload)) = Icmpv4Header::from_slice(pkt.payload()) {
                     if let etherparse::Icmpv4Type::EchoRequest(echo) = icmp_header.icmp_type {
-                        let mut resp =
-                            Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
+                        let mut resp = Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
                         resp.update_checksum(req_payload);
                         let mut payload = resp.to_bytes().to_vec();
                         payload.extend_from_slice(req_payload);
@@ -213,84 +217,21 @@ fn addr_to_host_port(addr: &SocketAddr) -> (String, u16) {
 
 fn default_tun_name() -> &'static str {
     #[cfg(target_os = "linux")]
-    { "tun0" }
+    {
+        "tun0"
+    }
     #[cfg(target_os = "macos")]
-    { "utun3" }
+    {
+        "utun3"
+    }
     #[cfg(target_os = "windows")]
-    { "xtune-tun" }
+    {
+        "xtune-tun"
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    { "tun0" }
-}
-
-// ─── Cross-platform TUN device name detection ───
-
-/// Get the TUN device name by scanning network interfaces.
-fn get_tun_name() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    { get_tun_name_linux() }
-    #[cfg(target_os = "macos")]
-    { get_tun_name_macos() }
-    #[cfg(target_os = "windows")]
-    { get_tun_name_windows() }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    { None }
-}
-
-#[cfg(target_os = "linux")]
-fn get_tun_name_linux() -> Option<String> {
-    for i in 0..10 {
-        let name = format!("tun{}", i);
-        let path = format!("/sys/class/net/{}", name);
-        if std::path::Path::new(&path).exists() {
-            return Some(name);
-        }
+    {
+        "tun0"
     }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn get_tun_name_macos() -> Option<String> {
-    // macOS uses utunN interfaces; scan for the highest-numbered one
-    let output = std::process::Command::new("ifconfig")
-        .arg("-l")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let ifaces = String::from_utf8_lossy(&output.stdout);
-    ifaces
-        .split_whitespace()
-        .filter(|name| name.starts_with("utun"))
-        .last()
-        .map(|s| s.to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn get_tun_name_windows() -> Option<String> {
-    // On Windows the tun crate (wintun backend) returns a fixed name.
-    // We probe for a network adapter whose IP matches our TUN_IPV4.
-    let output = std::process::Command::new("netsh")
-        .args(["interface", "ip", "show", "addresses"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let tun_ip_str = TUN_IPV4.to_string();
-    let mut current_iface: Option<String> = None;
-    for line in text.lines() {
-        // Interface lines look like: Configuration for interface "Ethernet"
-        if let Some(pos) = line.find('"') {
-            if let Some(end) = line[pos + 1..].find('"') {
-                current_iface = Some(line[pos + 1..pos + 1 + end].to_string());
-            }
-        }
-        if line.contains(&tun_ip_str) {
-            if let Some(ref name) = current_iface {
-                return Some(name.clone());
-            }
-        }
-    }
-    Some("xtune-tun".to_string())
 }
 
 // ─── Cross-platform route setup ───
@@ -302,8 +243,8 @@ pub fn setup_tun_routes(
     route_info: &TunRouteInfo,
     proxy_server_ips: &[Ipv4Addr],
 ) -> Result<TunRouteGuard> {
-    let (orig_gateway, orig_iface) = get_default_gateway()
-        .context("Failed to get default gateway")?;
+    let (orig_gateway, orig_iface) =
+        get_default_gateway().context("Failed to get default gateway")?;
 
     tracing::info!(
         "Original default route: {} via {}",
@@ -326,6 +267,7 @@ pub fn setup_tun_routes(
         orig_gateway,
         orig_iface,
         proxy_server_ips: proxy_server_ips.to_vec(),
+        restored: AtomicBool::new(false),
     })
 }
 
@@ -334,11 +276,16 @@ pub struct TunRouteGuard {
     orig_gateway: Ipv4Addr,
     orig_iface: String,
     proxy_server_ips: Vec<Ipv4Addr>,
+    restored: AtomicBool,
 }
 
 impl TunRouteGuard {
     /// Explicitly restore routes.
     pub fn restore(&self) {
+        if self.restored.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
         tracing::info!("Restoring original routes");
 
         #[cfg(target_os = "linux")]
@@ -378,16 +325,62 @@ fn setup_routes_linux(
             "ip",
             &["route", "add", &ip_route, "via", &gw_str, "dev", orig_iface],
         );
-        tracing::info!("Route: {} -> {} via {} (loop avoidance)", ip, orig_gateway, orig_iface);
+        tracing::info!(
+            "Route: {} -> {} via {} (loop avoidance)",
+            ip,
+            orig_gateway,
+            orig_iface
+        );
     }
 
-    // Replace default route to go through TUN
+    // Wait for TUN device to be fully ready before setting routes
+    wait_for_tun_device(&route_info.tun_name)?;
+
     let tun_gw = route_info.tun_gateway.to_string();
+
+    // Try atomic replace first (no window without default route)
+    if run_cmd(
+        "ip",
+        &[
+            "route",
+            "replace",
+            "default",
+            "via",
+            &tun_gw,
+            "dev",
+            &route_info.tun_name,
+        ],
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    tracing::warn!("ip route replace via gateway failed, trying dev-only route");
+
+    // Fallback: try dev-only (no via) – more compatible with some TUN configurations
+    if run_cmd(
+        "ip",
+        &["route", "replace", "default", "dev", &route_info.tun_name],
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    tracing::warn!("ip route replace dev-only failed, trying del+add");
+
+    // Last resort: delete + add
     let _ = run_cmd("ip", &["route", "del", "default"]);
     run_cmd(
         "ip",
-        &["route", "add", "default", "via", &tun_gw, "dev", &route_info.tun_name],
-    )?;
+        &["route", "add", "default", "dev", &route_info.tun_name],
+    )
+    .with_context(|| {
+        format!(
+            "Failed to set default route through TUN device {}. {}",
+            route_info.tun_name,
+            tun_route_failure_hint()
+        )
+    })?;
 
     Ok(())
 }
@@ -396,10 +389,18 @@ fn setup_routes_linux(
 impl TunRouteGuard {
     fn restore_linux(&self) {
         let gw_str = self.orig_gateway.to_string();
-        let _ = run_cmd("ip", &["route", "del", "default"]);
+        // Use replace for atomic route restoration
         let _ = run_cmd(
             "ip",
-            &["route", "add", "default", "via", &gw_str, "dev", &self.orig_iface],
+            &[
+                "route",
+                "replace",
+                "default",
+                "via",
+                &gw_str,
+                "dev",
+                &self.orig_iface,
+            ],
         );
         for ip in &self.proxy_server_ips {
             let ip_route = format!("{}/32", ip);
@@ -427,8 +428,20 @@ fn setup_routes_macos(
 
     // Replace default route through TUN gateway
     let tun_gw = route_info.tun_gateway.to_string();
+
+    // Try change first (atomic), then delete+add as fallback
+    if run_cmd("route", &["-n", "change", "default", &tun_gw]).is_ok() {
+        return Ok(());
+    }
+    tracing::warn!("route change failed, trying delete+add");
+
     let _ = run_cmd("route", &["-n", "delete", "default"]);
-    run_cmd("route", &["-n", "add", "default", &tun_gw])?;
+    run_cmd("route", &["-n", "add", "default", &tun_gw]).with_context(|| {
+        format!(
+            "Failed to set default route through TUN. {}",
+            tun_route_failure_hint()
+        )
+    })?;
 
     Ok(())
 }
@@ -437,8 +450,11 @@ fn setup_routes_macos(
 impl TunRouteGuard {
     fn restore_macos(&self) {
         let gw_str = self.orig_gateway.to_string();
-        let _ = run_cmd("route", &["-n", "delete", "default"]);
-        let _ = run_cmd("route", &["-n", "add", "default", &gw_str]);
+        // Try change first, then delete+add
+        if run_cmd("route", &["-n", "change", "default", &gw_str]).is_err() {
+            let _ = run_cmd("route", &["-n", "delete", "default"]);
+            let _ = run_cmd("route", &["-n", "add", "default", &gw_str]);
+        }
         for ip in &self.proxy_server_ips {
             let _ = run_cmd("route", &["-n", "delete", "-host", &ip.to_string()]);
         }
@@ -460,18 +476,46 @@ fn setup_routes_windows(
         let ip_str = ip.to_string();
         let _ = run_cmd(
             "route",
-            &["add", &ip_str, "mask", "255.255.255.255", &gw_str, "metric", "5"],
+            &[
+                "add",
+                &ip_str,
+                "mask",
+                "255.255.255.255",
+                &gw_str,
+                "metric",
+                "5",
+            ],
         );
         tracing::info!("Route: {} -> {} (loop avoidance)", ip, orig_gateway);
     }
 
     // Replace default route through TUN gateway
     let tun_gw = route_info.tun_gateway.to_string();
+
+    // Try change first (atomic), then delete+add as fallback
+    if run_cmd(
+        "route",
+        &[
+            "change", "0.0.0.0", "mask", "0.0.0.0", &tun_gw, "metric", "3",
+        ],
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    tracing::warn!("route change failed, trying delete+add");
+
     let _ = run_cmd("route", &["delete", "0.0.0.0"]);
     run_cmd(
         "route",
         &["add", "0.0.0.0", "mask", "0.0.0.0", &tun_gw, "metric", "3"],
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "Failed to set default route through TUN. {}",
+            tun_route_failure_hint()
+        )
+    })?;
 
     Ok(())
 }
@@ -480,12 +524,21 @@ fn setup_routes_windows(
 impl TunRouteGuard {
     fn restore_windows(&self) {
         let gw_str = self.orig_gateway.to_string();
-        // Remove TUN default route and restore original
-        let _ = run_cmd("route", &["delete", "0.0.0.0"]);
-        let _ = run_cmd(
+        // Try change first, then delete+add
+        if run_cmd(
             "route",
-            &["add", "0.0.0.0", "mask", "0.0.0.0", &gw_str, "metric", "5"],
-        );
+            &[
+                "change", "0.0.0.0", "mask", "0.0.0.0", &gw_str, "metric", "5",
+            ],
+        )
+        .is_err()
+        {
+            let _ = run_cmd("route", &["delete", "0.0.0.0"]);
+            let _ = run_cmd(
+                "route",
+                &["add", "0.0.0.0", "mask", "0.0.0.0", &gw_str, "metric", "5"],
+            );
+        }
         for ip in &self.proxy_server_ips {
             let _ = run_cmd("route", &["delete", &ip.to_string()]);
         }
@@ -496,13 +549,21 @@ impl TunRouteGuard {
 
 fn get_default_gateway() -> Result<(Ipv4Addr, String)> {
     #[cfg(target_os = "linux")]
-    { get_default_gateway_linux() }
+    {
+        get_default_gateway_linux()
+    }
     #[cfg(target_os = "macos")]
-    { get_default_gateway_macos() }
+    {
+        get_default_gateway_macos()
+    }
     #[cfg(target_os = "windows")]
-    { get_default_gateway_windows() }
+    {
+        get_default_gateway_windows()
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    { bail!("TUN mode is not supported on this platform") }
+    {
+        bail!("TUN mode is not supported on this platform")
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -605,7 +666,10 @@ fn get_default_gateway_windows() -> Result<(Ipv4Addr, String)> {
     // Fallback: try PowerShell
     let ps_output = run_cmd(
         "powershell",
-        &["-Command", "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop"],
+        &[
+            "-Command",
+            "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop",
+        ],
     );
     if let Ok(ps_out) = ps_output {
         let gw_str = ps_out.trim();
@@ -617,22 +681,90 @@ fn get_default_gateway_windows() -> Result<(Ipv4Addr, String)> {
     bail!("No default gateway found on Windows")
 }
 
-// ─── Utility functions ───
+// ─── TUN device readiness check ───
 
-/// Run an external command and return its output.
-fn run_cmd(cmd: &str, args: &[&str]) -> Result<String> {
-    let cmd_path = find_cmd(cmd).unwrap_or_else(|| cmd.to_string());
-    let output = std::process::Command::new(&cmd_path)
-        .args(args)
-        .output()
-        .with_context(|| format!("Failed to run: {} {}", cmd_path, args.join(" ")))?;
+/// Wait for a TUN device to appear and be operational.
+#[cfg(target_os = "linux")]
+fn wait_for_tun_device(tun_name: &str) -> Result<()> {
+    let sys_path = format!("/sys/class/net/{}", tun_name);
+    let operstate_path = format!("{}/operstate", sys_path);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("{} {} failed: {}", cmd, args.join(" "), stderr.trim());
+    for i in 0..20 {
+        if std::path::Path::new(&sys_path).exists() {
+            // Check if device is up (operstate is "up" or "unknown" for TUN)
+            if let Ok(state) = std::fs::read_to_string(&operstate_path) {
+                let state = state.trim();
+                if state == "up" || state == "unknown" {
+                    tracing::debug!(
+                        "TUN device {} ready (state: {}, attempt {})",
+                        tun_name,
+                        state,
+                        i
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    // If the device exists but operstate never became up, still try
+    if std::path::Path::new(&sys_path).exists() {
+        tracing::warn!(
+            "TUN device {} exists but may not be fully ready, proceeding anyway",
+            tun_name
+        );
+        return Ok(());
+    }
+
+    bail!("TUN device {} did not appear within 2 seconds", tun_name)
+}
+
+// ─── Utility functions ───
+
+/// Run an external command with a timeout and return its output.
+fn run_cmd(cmd: &str, args: &[&str]) -> Result<String> {
+    run_cmd_timeout(cmd, args, std::time::Duration::from_secs(10))
+}
+
+/// Run an external command with a specific timeout.
+fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: std::time::Duration) -> Result<String> {
+    let cmd_path = find_cmd(cmd).unwrap_or_else(|| cmd.to_string());
+    let cmd_path_clone = cmd_path.clone();
+    let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let args_display = args.join(" ");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = std::process::Command::new(&cmd_path_clone)
+            .args(&args_owned)
+            .output();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => {
+            let _ = handle.join();
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("{} {} failed: {}", cmd, args_display, stderr.trim());
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+        Ok(Err(e)) => {
+            let _ = handle.join();
+            bail!("Failed to run {} {}: {}", cmd, args_display, e);
+        }
+        Err(_) => {
+            // Timeout - the thread may still be running but we proceed
+            bail!(
+                "{} {} timed out after {}s",
+                cmd,
+                args_display,
+                timeout.as_secs()
+            );
+        }
+    }
 }
 
 /// Find a command in PATH or common system directories.
@@ -688,17 +820,145 @@ pub fn resolve_to_ipv4(host: &str) -> Vec<Ipv4Addr> {
 
 /// Check if TUN mode is supported on the current platform.
 pub fn tun_supported() -> bool {
-    cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows"))
+    cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))
 }
 
 /// Return a human-readable description of TUN requirements for the current OS.
 pub fn tun_requirements() -> &'static str {
     #[cfg(target_os = "linux")]
-    { "Requires root or CAP_NET_ADMIN capability" }
+    {
+        "Requires root or CAP_NET_ADMIN capability"
+    }
     #[cfg(target_os = "macos")]
-    { "Requires root privileges (sudo)" }
+    {
+        "Requires root privileges (sudo)"
+    }
     #[cfg(target_os = "windows")]
-    { "Requires Administrator privileges" }
+    {
+        "Requires Administrator privileges"
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    { "TUN mode is not supported on this platform" }
+    {
+        "TUN mode is not supported on this platform"
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivilegeStatus {
+    Privileged,
+    Missing,
+    Unknown,
+}
+
+fn validate_tun_environment() -> Result<()> {
+    if !tun_supported() {
+        bail!("{}", tun_requirements());
+    }
+
+    #[cfg(target_os = "linux")]
+    if !std::path::Path::new("/dev/net/tun").exists() {
+        bail!(
+            "TUN device node /dev/net/tun is missing. Load the tun kernel module and ensure the device node exists."
+        );
+    }
+
+    match current_privilege_status() {
+        PrivilegeStatus::Missing if cfg!(any(target_os = "macos", target_os = "windows")) => {
+            bail!("{}", tun_requirements());
+        }
+        _ => Ok(()),
+    }
+}
+
+fn tun_creation_failure_message() -> String {
+    #[cfg(target_os = "linux")]
+    if !std::path::Path::new("/dev/net/tun").exists() {
+        return "Failed to create TUN device: /dev/net/tun is missing. Load the tun kernel module and ensure the device node exists.".to_string();
+    }
+
+    match current_privilege_status() {
+        PrivilegeStatus::Missing => format!("Failed to create TUN device. {}", tun_requirements()),
+        PrivilegeStatus::Privileged => {
+            "Failed to create TUN device. The TUN driver or adapter may be unavailable on this system.".to_string()
+        }
+        PrivilegeStatus::Unknown => format!(
+            "Failed to create TUN device. Ensure the TUN driver is installed and {}",
+            tun_requirements().to_lowercase()
+        ),
+    }
+}
+
+fn tun_route_failure_hint() -> String {
+    match current_privilege_status() {
+        PrivilegeStatus::Missing => tun_requirements().to_string(),
+        PrivilegeStatus::Privileged => {
+            "The current process already has elevated privileges, so the TUN interface or routing command likely failed to initialize correctly.".to_string()
+        }
+        PrivilegeStatus::Unknown => format!(
+            "Ensure the required routing tools are available and {}",
+            tun_requirements().to_lowercase()
+        ),
+    }
+}
+
+fn current_privilege_status() -> PrivilegeStatus {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        if unix_is_root() {
+            return PrivilegeStatus::Privileged;
+        }
+        return PrivilegeStatus::Missing;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return match windows_is_elevated() {
+            Some(true) => PrivilegeStatus::Privileged,
+            Some(false) => PrivilegeStatus::Missing,
+            None => PrivilegeStatus::Unknown,
+        };
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PrivilegeStatus::Unknown
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+unsafe extern "C" {
+    fn geteuid() -> u32;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn unix_is_root() -> bool {
+    unsafe { geteuid() == 0 }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_is_elevated() -> Option<bool> {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "True" => Some(true),
+        "False" => Some(false),
+        _ => None,
+    }
 }

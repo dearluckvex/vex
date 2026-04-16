@@ -140,7 +140,12 @@ async fn handle_socks5(mut stream: TcpStream, outbound: SharedOutbound) -> Resul
                     );
                 }
                 Err(e) => {
-                    tracing::warn!("SOCKS5 outbound connect failed for {}:{}: {}", host, port, e);
+                    tracing::warn!(
+                        "SOCKS5 outbound connect failed for {}:{}: {}",
+                        host,
+                        port,
+                        e
+                    );
                     stream.write_all(&socks5_reply(0x04)).await?; // host unreachable
                     return Err(e);
                 }

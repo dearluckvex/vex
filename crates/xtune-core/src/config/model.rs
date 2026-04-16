@@ -284,21 +284,19 @@ mod tests {
 
     #[test]
     fn normalize_nodes_decodes_names() {
-        let mut nodes = vec![
-            Node {
-                name: "%E9%A6%99%E6%B8%AF".to_string(),
-                server: "1.2.3.4".to_string(),
-                port: 443,
-                protocol: ProxyProtocol::Shadowsocks {
-                    cipher: "aes-256-gcm".to_string(),
-                    password: "test".to_string(),
-                    udp: false,
-                },
-                transport: None,
-                latency_ms: None,
-                extra: Default::default(),
+        let mut nodes = vec![Node {
+            name: "%E9%A6%99%E6%B8%AF".to_string(),
+            server: "1.2.3.4".to_string(),
+            port: 443,
+            protocol: ProxyProtocol::Shadowsocks {
+                cipher: "aes-256-gcm".to_string(),
+                password: "test".to_string(),
+                udp: false,
             },
-        ];
+            transport: None,
+            latency_ms: None,
+            extra: Default::default(),
+        }];
         assert!(normalize_node_names(&mut nodes));
         assert_eq!(nodes[0].name, "香港");
     }

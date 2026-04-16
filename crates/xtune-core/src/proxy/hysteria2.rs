@@ -109,9 +109,7 @@ impl Hysteria2Outbound {
 
         // Transport config: BBR congestion control for Hysteria2
         let mut transport = quinn::TransportConfig::default();
-        transport.congestion_controller_factory(Arc::new(
-            quinn::congestion::BbrConfig::default(),
-        ));
+        transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
         transport.max_idle_timeout(Some(
             quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
@@ -121,7 +119,12 @@ impl Hysteria2Outbound {
         client_config.transport_config(Arc::new(transport));
 
         let addr = resolve_server(&self.server, self.port).await?;
-        tracing::debug!("Hysteria2 resolved {}:{} -> {}", self.server, self.port, addr);
+        tracing::debug!(
+            "Hysteria2 resolved {}:{} -> {}",
+            self.server,
+            self.port,
+            addr
+        );
 
         // Bind to matching address family
         let bind_addr: std::net::SocketAddr = if addr.is_ipv4() {
@@ -133,15 +136,15 @@ impl Hysteria2Outbound {
         endpoint.set_default_client_config(client_config);
 
         let connecting = endpoint.connect(addr, &self.sni)?;
-        let connection = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            connecting,
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!(
-            "Hysteria2 connection to {}:{} timed out (UDP may be blocked by firewall)",
-            self.server, self.port
-        ))??;
+        let connection = tokio::time::timeout(std::time::Duration::from_secs(15), connecting)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Hysteria2 connection to {}:{} timed out (UDP may be blocked by firewall)",
+                    self.server,
+                    self.port
+                )
+            })??;
 
         tracing::info!(
             "Hysteria2 QUIC connection established to {}:{} ({})",
@@ -229,10 +232,7 @@ impl Outbound for Hysteria2Outbound {
 
             tracing::debug!("Hysteria2 connect to {}:{}", host, port);
 
-            let stream = Hy2BidiStream {
-                send,
-                recv,
-            };
+            let stream = Hy2BidiStream { send, recv };
             Ok(Box::new(stream) as BoxProxyStream)
         })
     }
@@ -397,8 +397,7 @@ mod tests {
             alpn: Some(vec!["h3".to_string()]),
             fingerprint: None,
         };
-        let outbound =
-            Hysteria2Outbound::new("server.com", 443, "pass", Some(&tls)).unwrap();
+        let outbound = Hysteria2Outbound::new("server.com", 443, "pass", Some(&tls)).unwrap();
         assert_eq!(outbound.sni, "custom.sni.com");
         assert!(outbound.skip_cert_verify);
     }

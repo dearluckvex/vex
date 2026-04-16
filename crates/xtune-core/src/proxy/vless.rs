@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::config::model::{TlsConfig, TransportConfig, TransportType};
@@ -62,13 +62,17 @@ impl Outbound for VlessOutbound {
                 self.tls_config.as_ref(),
                 self.use_tls,
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "VLESS: failed to connect to {}:{} (target: {}:{})",
+                    self.server, self.port, target_host, port
+                )
+            })?;
 
-            // Send VLESS request header
             let header = build_vless_request(&self.uuid, &target_host, port);
             stream.write_all(&header).await?;
 
-            // Read VLESS response header
             read_vless_response(&mut stream).await?;
 
             Ok(stream)

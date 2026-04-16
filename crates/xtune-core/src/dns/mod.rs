@@ -211,7 +211,9 @@ impl DnsResolver {
 
         let mut buf = vec![0u8; 512];
         let timeout = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf));
-        let (n, _) = timeout.await.map_err(|_| anyhow::anyhow!("DNS query timeout"))??;
+        let (n, _) = timeout
+            .await
+            .map_err(|_| anyhow::anyhow!("DNS query timeout"))??;
 
         parse_dns_response(&buf[..n])
     }
@@ -481,7 +483,10 @@ mod tests {
         };
         let resolver = DnsResolver::with_config(config);
 
-        assert_eq!(resolver.match_domain_group("www.baidu.com"), DnsGroup::Fallback);
+        assert_eq!(
+            resolver.match_domain_group("www.baidu.com"),
+            DnsGroup::Fallback
+        );
         assert_eq!(resolver.match_domain_group("test.cn"), DnsGroup::Fallback);
         assert_eq!(resolver.match_domain_group("google.com"), DnsGroup::Primary);
     }

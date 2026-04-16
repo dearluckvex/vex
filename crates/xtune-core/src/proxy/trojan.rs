@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use sha2::{Digest, Sha224};
 use tokio::io::AsyncWriteExt;
 
@@ -41,20 +41,23 @@ impl Outbound for TrojanOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let target_host = host.to_string();
         Box::pin(async move {
-            // Trojan always uses TLS
             let mut stream = connect_with_tls(
                 &self.server,
                 self.port,
                 self.tls_config.as_ref(),
-                true, // always TLS
+                true, // Trojan always uses TLS
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "Trojan: failed to connect to {}:{} (target: {}:{})",
+                    self.server, self.port, target_host, port
+                )
+            })?;
 
-            // Send Trojan request
             let header = build_trojan_request(&self.password_hash, &target_host, port);
             stream.write_all(&header).await?;
 
-            // No response header in Trojan - data flows immediately after request
             Ok(stream)
         })
     }

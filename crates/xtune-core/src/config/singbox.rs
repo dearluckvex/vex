@@ -32,8 +32,8 @@ struct SingBoxOutbound {
     // Auth fields
     uuid: Option<String>,
     password: Option<String>,
-    method: Option<String>,   // SS cipher
-    flow: Option<String>,     // VLESS
+    method: Option<String>, // SS cipher
+    flow: Option<String>,   // VLESS
 
     // TUIC
     congestion_control: Option<String>,
@@ -118,7 +118,11 @@ fn convert_singbox_outbound(ob: &SingBoxOutbound) -> Result<Option<Node>> {
     let protocol = match ob.outbound_type.as_str() {
         "tuic" => {
             let uuid = ob.uuid.as_ref().context("TUIC missing uuid")?.clone();
-            let password = ob.password.as_ref().context("TUIC missing password")?.clone();
+            let password = ob
+                .password
+                .as_ref()
+                .context("TUIC missing password")?
+                .clone();
             let congestion_control = ob
                 .congestion_control
                 .clone()

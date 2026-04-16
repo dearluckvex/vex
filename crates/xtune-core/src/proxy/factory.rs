@@ -66,12 +66,7 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
 
         ProxyProtocol::Hysteria2 { password, .. } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
-            let outbound = Hysteria2Outbound::new(
-                &node.server,
-                node.port,
-                password,
-                tls_config,
-            )?;
+            let outbound = Hysteria2Outbound::new(&node.server, node.port, password, tls_config)?;
             Ok(SharedOutbound(Arc::new(outbound)))
         }
     }

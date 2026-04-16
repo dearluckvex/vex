@@ -5,11 +5,11 @@ pub mod router;
 pub mod system_proxy;
 
 pub use config::clash::parse_clash_config;
-pub use config::singbox::{parse_singbox_config, parse_singbox_outbound};
 pub use config::model::{
     AppConfig, Node, ProxyMode, ProxyProtocol, RoutingRule, Subscription, TransportConfig,
     TransportType, decode_display_name, normalize_node_names,
 };
+pub use config::singbox::{parse_singbox_config, parse_singbox_outbound};
 pub use config::subscription::{detect_format, fetch_subscription, parse_subscription_content};
 pub use config::v2ray::{
     parse_hysteria2_uri, parse_proxy_uri, parse_ss_uri, parse_trojan_uri, parse_tuic_uri,
@@ -19,6 +19,7 @@ pub use config::v2ray::{
 pub use proxy::connector::{BoxProxyStream, DirectOutbound, Outbound, ProxyStream, SharedOutbound};
 pub use proxy::factory::create_outbound;
 pub use proxy::http::HttpProxyServer;
+pub use proxy::hysteria2::Hysteria2Outbound;
 pub use proxy::routing::RoutingOutbound;
 pub use proxy::service::ProxyService;
 pub use proxy::socks5::Socks5Server;
@@ -32,10 +33,11 @@ pub use proxy::tun::{
 };
 pub use proxy::vless::VlessOutbound;
 pub use proxy::vmess::VMessOutbound;
-pub use proxy::hysteria2::Hysteria2Outbound;
 pub use proxy::{ProxyState, ProxyStats};
 
-pub use dns::{DnsConfig, DnsGroup, DnsResolver, DnsServer, china_domain_suffixes, china_split_dns_config};
+pub use dns::{
+    DnsConfig, DnsGroup, DnsResolver, DnsServer, china_domain_suffixes, china_split_dns_config,
+};
 
 pub use router::{GeoIpDb, MatchRule, RouteAction, Router, RuleSet, china_direct_ruleset};
 pub use system_proxy::{

@@ -10,11 +10,11 @@ use xtune_core::config::model::{
 };
 use xtune_core::proxy::ProxyStats;
 use xtune_core::{
-    ProxyMode, ProxyService, RoutingOutbound, Router, SharedOutbound, TunProxy,
+    ProxyMode, ProxyService, Router, RoutingOutbound, RuleSet, SharedOutbound, TunProxy,
     china_direct_ruleset, clear_system_proxy as clear_os_proxy, create_outbound,
-    fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names,
-    resolve_to_ipv4, set_system_proxy as set_os_proxy, setup_tun_routes, system_proxy_supported,
-    tun_requirements, tun_supported,
+    fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names, resolve_to_ipv4,
+    set_system_proxy as set_os_proxy, setup_tun_routes, system_proxy_supported, tun_requirements,
+    tun_supported,
 };
 
 // Color palette
@@ -57,6 +57,8 @@ pub struct AppState {
 
     // Import status
     import_status: String,
+    settings_status: String,
+    rules_status: String,
 
     // Settings (applied values)
     listen_addr: String,
@@ -114,6 +116,34 @@ fn current_system_proxy_state() -> (bool, String) {
     }
 }
 
+fn rule_mode_ruleset(rules: &[RoutingRule]) -> RuleSet {
+    if rules.is_empty() {
+        china_direct_ruleset()
+    } else {
+        RuleSet::from_config(rules)
+    }
+}
+
+fn rule_mode_summary(rules: &[RoutingRule]) -> String {
+    if rules.is_empty() {
+        "Built-in China direct rules".to_string()
+    } else {
+        format!("{} custom rule(s)", rules.len())
+    }
+}
+
+fn status_text_color(message: &str) -> u32 {
+    if message.starts_with('✓') {
+        SUCCESS_COLOR
+    } else if message.starts_with('✗') || message.starts_with('❌') {
+        DANGER_COLOR
+    } else if message.starts_with('⚠') {
+        WARNING_COLOR
+    } else {
+        TEXT_SECONDARY
+    }
+}
+
 impl AppState {
     pub fn new(
         window: &mut Window,
@@ -151,15 +181,9 @@ impl AppState {
                 .default_value(persisted.http_port.to_string())
         });
         let (system_proxy_enabled, system_proxy_status) = current_system_proxy_state();
-        let rule_type_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("domain-suffix")
-        });
-        let rule_pattern_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("google.com")
-        });
-        let rule_target_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("proxy")
-        });
+        let rule_type_input = cx.new(|cx| InputState::new(window, cx).placeholder("domain-suffix"));
+        let rule_pattern_input = cx.new(|cx| InputState::new(window, cx).placeholder("google.com"));
+        let rule_target_input = cx.new(|cx| InputState::new(window, cx).placeholder("proxy"));
 
         Self {
             active_view: ActiveView::Home,
@@ -180,6 +204,8 @@ impl AppState {
             } else {
                 format!("✓ Loaded {} saved nodes", persisted.nodes.len())
             },
+            settings_status: String::new(),
+            rules_status: String::new(),
             listen_addr: persisted.listen_addr,
             socks_port: persisted.socks_port,
             http_port: persisted.http_port,
@@ -239,7 +265,7 @@ impl AppState {
                     o
                 }
                 Err(e) => {
-                    self.proxy_status = format!("Error: {}", e);
+                    self.proxy_status = format!("✗ Outbound error: {:#}", e);
                     cx.notify();
                     return;
                 }
@@ -257,8 +283,8 @@ impl AppState {
                 outbound
             }
             ProxyMode::Rule => {
-                tracing::info!("Proxy mode: Rule (China direct)");
-                let ruleset = china_direct_ruleset();
+                tracing::info!("Proxy mode: Rule ({})", rule_mode_summary(&self.rules));
+                let ruleset = rule_mode_ruleset(&self.rules);
                 let router = std::sync::Arc::new(Router::new(ruleset));
                 let routing = RoutingOutbound::new(router, outbound);
                 SharedOutbound(std::sync::Arc::new(routing))
@@ -332,7 +358,7 @@ impl AppState {
                     .ok();
                     true
                 }
-                Ok(Err(err)) => {
+                    Ok(Err(err)) => {
                     weak.update(cx, |this: &mut AppState, cx| {
                         if this.proxy_session_id != session_id {
                             return;
@@ -341,7 +367,7 @@ impl AppState {
                         this.proxy_stop_tx = None;
                         this.proxy_stats = None;
                         this.active_proxy_node = None;
-                        this.proxy_status = format!("Error: {}", err);
+                        this.proxy_status = format!("✗ Start failed: {:#}", err);
                         this.proxy_validation_status = "Not validated".to_string();
                         cx.notify();
                     })
@@ -370,8 +396,8 @@ impl AppState {
                         return;
                     }
                     this.proxy_validation_status = match proxy_check {
-                        Ok(summary) => format!("Verified — {}", summary),
-                        Err(err) => format!("Validation failed — {}", err),
+                        Ok(summary) => format!("✓ {}", summary),
+                        Err(err) => format!("✗ {:#}", err),
                     };
                     cx.notify();
                 })
@@ -405,8 +431,8 @@ impl AppState {
                         this.proxy_status = "Disconnected".to_string();
                         this.proxy_validation_status = "Not validated".to_string();
                     }
-                    Ok(Err(e)) => this.proxy_status = format!("Error: {}", e),
-                    Err(e) => this.proxy_status = format!("Error: {}", e),
+                    Ok(Err(e)) => this.proxy_status = format!("✗ {:#}", e),
+                    Err(e) => this.proxy_status = format!("✗ Task error: {}", e),
                 }
                 cx.notify();
             })
@@ -426,6 +452,72 @@ impl AppState {
         self.proxy_status = "Disconnecting...".to_string();
         self.proxy_validation_status = "Stopping local proxy".to_string();
         cx.notify();
+    }
+
+    fn restart_proxy_with_current_state(&mut self, cx: &mut Context<Self>) {
+        if !self.proxy_running {
+            return;
+        }
+
+        let restore_tun = self.tun_enabled;
+        let handle = self.tokio_handle.clone();
+        self.stop_proxy(cx);
+
+        cx.spawn(async move |weak, cx| {
+            let mut proxy_started = false;
+            for _ in 0..20 {
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    })
+                    .await
+                    .ok();
+
+                proxy_started = weak
+                    .update(cx, |this: &mut AppState, cx| {
+                        if this.proxy_running {
+                            false
+                        } else {
+                            this.start_proxy(cx);
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if proxy_started {
+                    break;
+                }
+            }
+
+            if !restore_tun || !proxy_started {
+                return;
+            }
+
+            for _ in 0..20 {
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    })
+                    .await
+                    .ok();
+
+                let tun_started = weak
+                    .update(cx, |this: &mut AppState, cx| {
+                        if this.tun_enabled || !this.proxy_running {
+                            false
+                        } else {
+                            this.start_tun(cx);
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if tun_started {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     // === Import ===
@@ -503,6 +595,12 @@ impl AppState {
             None => return,
         };
 
+        // Set latency to a sentinel while testing
+        if let Some(n) = self.nodes.get_mut(index) {
+            n.latency_ms = None;
+        }
+        cx.notify();
+
         let handle = self.tokio_handle.clone();
 
         cx.spawn(async move |weak, cx| {
@@ -510,8 +608,13 @@ impl AppState {
                 .spawn(async move {
                     let outbound = match create_outbound(&node) {
                         Ok(o) => o,
-                        Err(_) => {
+                        Err(e) => {
                             // Fallback: raw TCP latency if outbound creation fails
+                            tracing::warn!(
+                                "Cannot create outbound for {}: {}, falling back to TCP",
+                                node.name,
+                                e
+                            );
                             let addr = format!("{}:{}", node.server, node.port);
                             let start = std::time::Instant::now();
                             let timeout = tokio::time::timeout(
@@ -521,14 +624,14 @@ impl AppState {
                             .await;
                             return match timeout {
                                 Ok(Ok(_)) => Ok(start.elapsed().as_millis() as u32),
-                                Ok(Err(e)) => Err(format!("{}", e)),
-                                Err(_) => Err("Timeout".to_string()),
+                                Ok(Err(e)) => Err(format!("TCP: {}", e)),
+                                Err(_) => Err("TCP connect timed out (5s)".to_string()),
                             };
                         }
                     };
                     xtune_core::latency_test_node(&outbound, 15)
                         .await
-                        .map_err(|e| format!("{}", e))
+                        .map_err(|e| format!("{:#}", e))
                 })
                 .await;
 
@@ -557,20 +660,56 @@ impl AppState {
     // === Settings ===
 
     fn apply_settings(&mut self, cx: &mut Context<Self>) {
-        let addr = self.listen_addr_input.read(cx).value().to_string();
-        let socks = self.socks_port_input.read(cx).value().to_string();
-        let http = self.http_port_input.read(cx).value().to_string();
+        let addr = self.listen_addr_input.read(cx).value().trim().to_string();
+        let socks = self.socks_port_input.read(cx).value().trim().to_string();
+        let http = self.http_port_input.read(cx).value().trim().to_string();
 
-        if !addr.is_empty() {
-            self.listen_addr = addr;
+        if addr.is_empty() {
+            self.settings_status = "✗ Listen address cannot be empty".to_string();
+            cx.notify();
+            return;
         }
-        if let Ok(p) = socks.parse::<u16>() {
-            self.socks_port = p;
-        }
-        if let Ok(p) = http.parse::<u16>() {
-            self.http_port = p;
-        }
+
+        let socks_port = match socks.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => {
+                self.settings_status = format!("✗ Invalid SOCKS5 port: {}", socks);
+                cx.notify();
+                return;
+            }
+        };
+        let http_port = match http.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => {
+                self.settings_status = format!("✗ Invalid HTTP port: {}", http);
+                cx.notify();
+                return;
+            }
+        };
+
+        let changed = self.listen_addr != addr
+            || self.socks_port != socks_port
+            || self.http_port != http_port;
+
+        self.listen_addr = addr;
+        self.socks_port = socks_port;
+        self.http_port = http_port;
         self.persist_gui_state();
+        self.refresh_system_proxy_status(None, cx);
+
+        self.settings_status = if changed {
+            if self.proxy_running {
+                "✓ Settings applied. Restarting proxy with new ports.".to_string()
+            } else {
+                "✓ Settings applied".to_string()
+            }
+        } else {
+            "✓ Settings already up to date".to_string()
+        };
+
+        if changed && self.proxy_running {
+            self.restart_proxy_with_current_state(cx);
+        }
         cx.notify();
     }
 
@@ -656,7 +795,7 @@ impl AppState {
         let final_outbound = match self.proxy_mode {
             ProxyMode::Global => outbound,
             ProxyMode::Rule => {
-                let ruleset = china_direct_ruleset();
+                let ruleset = rule_mode_ruleset(&self.rules);
                 let router = std::sync::Arc::new(Router::new(ruleset));
                 let routing = RoutingOutbound::new(router, outbound);
                 SharedOutbound(std::sync::Arc::new(routing))
@@ -673,10 +812,25 @@ impl AppState {
         cx.spawn(async move |weak, cx| {
             let result = handle
                 .spawn(async move {
-                    let tun_proxy = TunProxy::start(final_outbound)?;
-                    let route_info = tun_proxy.route_info();
-                    let route_guard = setup_tun_routes(&route_info, &proxy_server_ips)?;
-                    Ok::<_, anyhow::Error>((tun_proxy, route_guard))
+                    // Wrap TUN creation with a timeout to prevent indefinite blocking
+                    let tun_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                            let tun_proxy = TunProxy::start(final_outbound)?;
+                            let route_info = tun_proxy.route_info();
+                            let route_guard = setup_tun_routes(&route_info, &proxy_server_ips)?;
+                            Ok((tun_proxy, route_guard))
+                        }),
+                    )
+                    .await;
+
+                    match tun_result {
+                        Ok(Ok(inner)) => inner,
+                        Ok(Err(e)) => Err(anyhow::anyhow!("TUN task panicked: {}", e)),
+                        Err(_) => Err(anyhow::anyhow!(
+                            "TUN startup timed out (15s). Check permissions and TUN driver."
+                        )),
+                    }
                 })
                 .await;
 
@@ -764,17 +918,22 @@ impl AppState {
 
     fn sort_nodes_by_latency(&mut self, cx: &mut Context<Self>) {
         // Remember selected/active node names before sorting
-        let selected_name = self.selected_node.and_then(|i| self.nodes.get(i)).map(|n| n.name.clone());
-        let active_name = self.active_proxy_node.and_then(|i| self.nodes.get(i)).map(|n| n.name.clone());
+        let selected_name = self
+            .selected_node
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| n.name.clone());
+        let active_name = self
+            .active_proxy_node
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| n.name.clone());
 
-        self.nodes.sort_by(|a, b| {
-            match (a.latency_ms, b.latency_ms) {
+        self.nodes
+            .sort_by(|a, b| match (a.latency_ms, b.latency_ms) {
                 (Some(a_ms), Some(b_ms)) => a_ms.cmp(&b_ms),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
-            }
-        });
+            });
 
         // Restore selected/active indices by name
         if let Some(name) = selected_name {
@@ -804,21 +963,7 @@ impl AppState {
 
         // If proxy is running, restart with new mode
         if self.proxy_running {
-            self.stop_proxy(cx);
-            let handle = self.tokio_handle.clone();
-            cx.spawn(async move |weak, cx| {
-                handle
-                    .spawn(async {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                    })
-                    .await
-                    .ok();
-                weak.update(cx, |this: &mut AppState, cx| {
-                    this.start_proxy(cx);
-                })
-                .ok();
-            })
-            .detach();
+            self.restart_proxy_with_current_state(cx);
         }
         cx.notify();
     }
@@ -827,21 +972,7 @@ impl AppState {
         self.selected_node = Some(index);
 
         if self.proxy_running {
-            self.stop_proxy(cx);
-            let handle = self.tokio_handle.clone();
-            cx.spawn(async move |weak, cx| {
-                handle
-                    .spawn(async {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                    })
-                    .await
-                    .ok();
-                weak.update(cx, |this: &mut AppState, cx| {
-                    this.start_proxy(cx);
-                })
-                .ok();
-            })
-            .detach();
+            self.restart_proxy_with_current_state(cx);
             return;
         }
 
@@ -1015,8 +1146,13 @@ impl AppState {
 
         let proxy_mode_label = match self.proxy_mode {
             ProxyMode::Global => "Global (all traffic via proxy)",
-            ProxyMode::Rule => "Rule (China direct / overseas proxy)",
+            ProxyMode::Rule => "Rule mode",
             ProxyMode::Direct => "Direct (no proxy)",
+        };
+        let rule_mode_detail = if self.proxy_mode == ProxyMode::Rule {
+            Some(rule_mode_summary(&self.rules))
+        } else {
+            None
         };
 
         let btn_label = if self.proxy_running {
@@ -1117,7 +1253,17 @@ impl AppState {
                             .text_color(rgb(TEXT_SECONDARY))
                             .mt_2()
                             .child(proxy_mode_label),
-                    ),
+                    )
+                    .child(if let Some(detail) = rule_mode_detail {
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_MUTED))
+                            .mt_1()
+                            .child(detail)
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    }),
             )
             // System Proxy card
             .child(
@@ -1180,14 +1326,14 @@ impl AppState {
                             .child({
                                 if self.tun_enabled {
                                     Button::new("tun-toggle")
-                                        .label("🟢 TUN Active — Click to Disable".to_string())
+                                        .label("🟢 Disable TUN".to_string())
                                         .primary()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.stop_tun(cx);
                                         }))
                                 } else if tun_supported() {
                                     Button::new("tun-toggle")
-                                        .label(format!("⭕ Enable TUN ({})", tun_requirements()))
+                                        .label("⭕ Enable TUN".to_string())
                                         .ghost()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.start_tun(cx);
@@ -1211,7 +1357,14 @@ impl AppState {
                             .text_xs()
                             .text_color(rgb(TEXT_MUTED))
                             .mt_1()
-                            .child("Routes ALL TCP/UDP traffic through the proxy tunnel via virtual network interface"),
+                            .child(format!("Requirements: {}", tun_requirements())),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_MUTED))
+                            .mt_1()
+                            .child("Routes all TCP/UDP traffic through the proxy tunnel via a virtual network interface"),
                     ),
             )
             // Status card
@@ -1258,7 +1411,7 @@ impl AppState {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(TEXT_SECONDARY))
+                                .text_color(rgb(status_text_color(&self.proxy_validation_status)))
                                 .child(format!(
                                     "Proxy Validation: {}",
                                     self.proxy_validation_status
@@ -1799,18 +1952,29 @@ impl AppState {
         let target = self.rule_target_input.read(cx).value().to_string();
 
         if rule_type.trim().is_empty() || pattern.trim().is_empty() || target.trim().is_empty() {
+            self.rules_status = "⚠ Rule type, pattern, and target are all required".to_string();
+            cx.notify();
             return;
         }
 
         let valid_types = [
-            "domain", "domain-suffix", "domain-keyword", "ip-cidr", "geoip", "match",
+            "domain",
+            "domain-suffix",
+            "domain-keyword",
+            "ip-cidr",
+            "geoip",
+            "match",
         ];
         let valid_targets = ["direct", "proxy", "reject"];
 
         if !valid_types.contains(&rule_type.trim()) {
+            self.rules_status = format!("✗ Unsupported rule type: {}", rule_type.trim());
+            cx.notify();
             return;
         }
         if !valid_targets.contains(&target.trim()) {
+            self.rules_status = format!("✗ Unsupported rule target: {}", target.trim());
+            cx.notify();
             return;
         }
 
@@ -1819,14 +1983,30 @@ impl AppState {
             pattern: pattern.trim().to_string(),
             target: target.trim().to_string(),
         });
+        self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            "✓ Rule added. Restarting Rule mode to apply changes.".to_string()
+        } else {
+            "✓ Rule added".to_string()
+        };
         self.persist_gui_state();
+        if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            self.restart_proxy_with_current_state(cx);
+        }
         cx.notify();
     }
 
     fn delete_rule(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.rules.len() {
             self.rules.remove(index);
+            self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+                "✓ Rule removed. Restarting Rule mode to apply changes.".to_string()
+            } else {
+                "✓ Rule removed".to_string()
+            };
             self.persist_gui_state();
+            if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+                self.restart_proxy_with_current_state(cx);
+            }
             cx.notify();
         }
     }
@@ -1834,7 +2014,15 @@ impl AppState {
     fn move_rule_up(&mut self, index: usize, cx: &mut Context<Self>) {
         if index > 0 && index < self.rules.len() {
             self.rules.swap(index, index - 1);
+            self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+                "✓ Rule order updated. Restarting Rule mode to apply changes.".to_string()
+            } else {
+                "✓ Rule moved".to_string()
+            };
             self.persist_gui_state();
+            if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+                self.restart_proxy_with_current_state(cx);
+            }
             cx.notify();
         }
     }
@@ -1842,7 +2030,15 @@ impl AppState {
     fn move_rule_down(&mut self, index: usize, cx: &mut Context<Self>) {
         if index + 1 < self.rules.len() {
             self.rules.swap(index, index + 1);
+            self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+                "✓ Rule order updated. Restarting Rule mode to apply changes.".to_string()
+            } else {
+                "✓ Rule moved".to_string()
+            };
             self.persist_gui_state();
+            if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+                self.restart_proxy_with_current_state(cx);
+            }
             cx.notify();
         }
     }
@@ -1850,34 +2046,107 @@ impl AppState {
     fn load_china_rules(&mut self, cx: &mut Context<Self>) {
         // Add the built-in China direct ruleset as explicit rules
         let china_rules = vec![
-            RoutingRule { rule_type: "geoip".into(), pattern: "CN".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "cn".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "baidu.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "qq.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "taobao.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "aliyun.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "jd.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "163.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "bilibili.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "domain-suffix".into(), pattern: "zhihu.com".into(), target: "direct".into() },
-            RoutingRule { rule_type: "ip-cidr".into(), pattern: "10.0.0.0/8".into(), target: "direct".into() },
-            RoutingRule { rule_type: "ip-cidr".into(), pattern: "172.16.0.0/12".into(), target: "direct".into() },
-            RoutingRule { rule_type: "ip-cidr".into(), pattern: "192.168.0.0/16".into(), target: "direct".into() },
-            RoutingRule { rule_type: "match".into(), pattern: "*".into(), target: "proxy".into() },
+            RoutingRule {
+                rule_type: "geoip".into(),
+                pattern: "CN".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "cn".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "baidu.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "qq.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "taobao.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "aliyun.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "jd.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "163.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "bilibili.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "domain-suffix".into(),
+                pattern: "zhihu.com".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "ip-cidr".into(),
+                pattern: "10.0.0.0/8".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "ip-cidr".into(),
+                pattern: "172.16.0.0/12".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "ip-cidr".into(),
+                pattern: "192.168.0.0/16".into(),
+                target: "direct".into(),
+            },
+            RoutingRule {
+                rule_type: "match".into(),
+                pattern: "*".into(),
+                target: "proxy".into(),
+            },
         ];
         self.rules = china_rules;
+        self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            "✓ China Direct preset loaded. Restarting Rule mode to apply changes.".to_string()
+        } else {
+            "✓ China Direct preset loaded".to_string()
+        };
         self.persist_gui_state();
+        if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            self.restart_proxy_with_current_state(cx);
+        }
         cx.notify();
     }
 
     fn clear_rules(&mut self, cx: &mut Context<Self>) {
         self.rules.clear();
+        self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            "✓ Custom rules cleared. Falling back to built-in China Direct rules.".to_string()
+        } else {
+            "✓ Custom rules cleared".to_string()
+        };
         self.persist_gui_state();
+        if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            self.restart_proxy_with_current_state(cx);
+        }
         cx.notify();
     }
 
     fn render_rules(&mut self, cx: &mut Context<Self>) -> Div {
         let rule_count = self.rules.len();
+        let rules_status = self.rules_status.clone();
         let rule_type_input = self.rule_type_input.clone();
         let rule_pattern_input = self.rule_pattern_input.clone();
         let rule_target_input = self.rule_target_input.clone();
@@ -1990,7 +2259,16 @@ impl AppState {
                                     .text_color(rgb(TEXT_MUTED))
                                     .mt_1()
                                     .child("Types: domain, domain-suffix, domain-keyword, ip-cidr, geoip, match  |  Targets: direct, proxy, reject"),
-                            ),
+                            )
+                            .child(if !rules_status.is_empty() {
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(status_text_color(&rules_status)))
+                                    .child(rules_status)
+                                    .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            }),
                     ),
             );
 
@@ -2043,7 +2321,7 @@ impl AppState {
                         .gap_1()
                         .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Rules are evaluated top-to-bottom; first match wins"))
                         .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• \"direct\" = connect without proxy, \"proxy\" = use selected node, \"reject\" = block"))
-                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Custom rules apply when Proxy Mode is set to \"Rule\" on the Home tab"))
+                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Rule mode uses your custom rules when present, otherwise it falls back to the built-in China Direct profile"))
                         .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("• Use ▲▼ arrows to reorder rules")),
                 ),
         );
@@ -2146,6 +2424,7 @@ impl AppState {
         let listen_addr_input = self.listen_addr_input.clone();
         let socks_port_input = self.socks_port_input.clone();
         let http_port_input = self.http_port_input.clone();
+        let settings_status = self.settings_status.clone();
 
         div()
             .flex()
@@ -2184,6 +2463,15 @@ impl AppState {
                                         this.apply_settings(cx);
                                     })),
                             )
+                            .child(if !settings_status.is_empty() {
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(status_text_color(&settings_status)))
+                                    .child(settings_status)
+                                    .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
                             .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child(format!(
                                 "Current: {}:{} (SOCKS5) / {}:{} (HTTP)",
                                 self.listen_addr, self.socks_port, self.listen_addr, self.http_port
@@ -2442,14 +2730,17 @@ async fn verify_local_http_proxy(
     let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from("www.google.com")
         .map_err(|e| anyhow::anyhow!("invalid server name: {}", e))?;
 
-    let tls_stream = tokio::time::timeout(timeout, connector.connect(server_name.to_owned(), stream))
-        .await
-        .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
-        .map_err(|e| anyhow::anyhow!("TLS handshake failed: {}", e))?;
+    let tls_stream =
+        tokio::time::timeout(timeout, connector.connect(server_name.to_owned(), stream))
+            .await
+            .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
+            .map_err(|e| anyhow::anyhow!("TLS handshake failed: {}", e))?;
 
     let (mut reader, mut writer) = tokio::io::split(tls_stream);
     writer
-        .write_all(b"GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
+        .write_all(
+            b"GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n",
+        )
         .await?;
 
     let mut resp_buf = vec![0u8; 1024];
@@ -2602,7 +2893,9 @@ fn protocol_note(protocol: &ProxyProtocol) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use xtune_core::decode_display_name;
+    use super::{Router, rule_mode_ruleset};
+    use xtune_core::config::model::RoutingRule;
+    use xtune_core::{RouteAction, decode_display_name};
 
     #[test]
     fn decode_display_name_handles_double_encoded_names() {
@@ -2610,5 +2903,30 @@ mod tests {
             decode_display_name("%25E9%25A9%25AC%25E6%259D%25A5%25E8%25A5%25BF%25E4%25BA%259A"),
             "马来西亚"
         );
+    }
+
+    #[test]
+    fn rule_mode_ruleset_uses_builtin_rules_when_empty() {
+        let router = Router::new(rule_mode_ruleset(&[]));
+        assert_eq!(router.route("www.baidu.com", 443), RouteAction::Direct);
+    }
+
+    #[test]
+    fn rule_mode_ruleset_prefers_custom_rules_when_present() {
+        let rules = vec![
+            RoutingRule {
+                rule_type: "domain-suffix".to_string(),
+                pattern: "example.com".to_string(),
+                target: "reject".to_string(),
+            },
+            RoutingRule {
+                rule_type: "match".to_string(),
+                pattern: "*".to_string(),
+                target: "proxy".to_string(),
+            },
+        ];
+
+        let router = Router::new(rule_mode_ruleset(&rules));
+        assert_eq!(router.route("api.example.com", 443), RouteAction::Reject);
     }
 }

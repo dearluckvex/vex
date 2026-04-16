@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, KeyInit as AesKeyInit};
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use hmac::{Hmac, Mac};
 use md5::{Digest as _, Md5};
 use rand::Rng;
@@ -108,7 +108,13 @@ impl Outbound for VMessOutbound {
                 self.tls_config.as_ref(),
                 self.use_tls,
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "VMess: failed to connect to {}:{} (target: {}:{})",
+                    self.server, self.port, target_host, port
+                )
+            })?;
 
             // Generate session keys (in a block so rng drops before await)
             let (req_body_key, req_body_iv, resp_auth, header) = {

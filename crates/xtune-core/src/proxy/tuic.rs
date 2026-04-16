@@ -114,7 +114,12 @@ impl TuicOutbound {
 
         // Create new connection (endpoint + connection)
         let (endpoint, conn) = self.create_connection().await.map_err(|e| {
-            tracing::error!("TUIC connection to {}:{} failed: {}", self.server, self.port, e);
+            tracing::error!(
+                "TUIC connection to {}:{} failed: {}",
+                self.server,
+                self.port,
+                e
+            );
             e
         })?;
         *guard = Some((endpoint, conn.clone()));
@@ -196,15 +201,15 @@ impl TuicOutbound {
 
         // Connect with timeout
         let connecting = endpoint.connect(addr, &self.sni)?;
-        let connection = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            connecting,
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!(
-            "TUIC QUIC connection to {}:{} timed out (UDP may be blocked by firewall)",
-            self.server, self.port
-        ))??;
+        let connection = tokio::time::timeout(std::time::Duration::from_secs(15), connecting)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "TUIC QUIC connection to {}:{} timed out (UDP may be blocked by firewall)",
+                    self.server,
+                    self.port
+                )
+            })??;
 
         tracing::info!(
             "TUIC QUIC connection established to {}:{} ({})",

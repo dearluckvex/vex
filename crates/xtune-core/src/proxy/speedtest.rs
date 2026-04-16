@@ -16,7 +16,10 @@ pub struct SpeedTestResult {
 ///
 /// 1. Measures TCP + protocol handshake latency by connecting to a test host.
 /// 2. Sends an HTTP GET and measures download throughput.
-pub async fn speed_test_node(outbound: &SharedOutbound, timeout_secs: u64) -> Result<SpeedTestResult> {
+pub async fn speed_test_node(
+    outbound: &SharedOutbound,
+    timeout_secs: u64,
+) -> Result<SpeedTestResult> {
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
     // Phase 1: Latency — connect through the proxy to www.gstatic.com:80
@@ -27,18 +30,16 @@ pub async fn speed_test_node(outbound: &SharedOutbound, timeout_secs: u64) -> Re
     let latency_ms = start.elapsed().as_millis() as u32;
 
     // Phase 2: Download speed — request a ~200 KB test payload
-    let request = b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n";
+    let request =
+        b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n";
     stream.write_all(request).await?;
 
     let dl_start = std::time::Instant::now();
     let mut total_bytes: u64 = 0;
     let mut buf = vec![0u8; 8192];
     loop {
-        let read_result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            stream.read(&mut buf),
-        )
-        .await;
+        let read_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf)).await;
 
         match read_result {
             Ok(Ok(0)) => break,
@@ -73,7 +74,9 @@ pub async fn latency_test_node(outbound: &SharedOutbound, timeout_secs: u64) -> 
         .map_err(|_| anyhow::anyhow!("connection timed out"))??;
 
     // Send a minimal HTTP request to ensure the tunnel is live
-    stream.write_all(b"HEAD / HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n").await?;
+    stream
+        .write_all(b"HEAD / HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n")
+        .await?;
     let mut buf = [0u8; 64];
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf)).await;
 

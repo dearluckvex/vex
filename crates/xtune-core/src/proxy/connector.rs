@@ -1,8 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
@@ -25,6 +26,9 @@ pub trait Outbound: Send + Sync + 'static {
     fn name(&self) -> &str;
 }
 
+/// Default timeout for direct TCP connections.
+const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Direct TCP connection (no proxy, used for testing and direct mode).
 pub struct DirectOutbound;
 
@@ -36,7 +40,18 @@ impl Outbound for DirectOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let addr = format!("{}:{}", host, port);
         Box::pin(async move {
-            let stream = TcpStream::connect(&addr).await?;
+            let stream =
+                tokio::time::timeout(DIRECT_CONNECT_TIMEOUT, TcpStream::connect(&addr))
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "Direct connection to {} timed out after {}s",
+                            addr,
+                            DIRECT_CONNECT_TIMEOUT.as_secs()
+                        )
+                    })?
+                    .with_context(|| format!("Direct connection to {} failed", addr))?;
+            stream.set_nodelay(true).ok();
             Ok(Box::new(stream) as BoxProxyStream)
         })
     }
