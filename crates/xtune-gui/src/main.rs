@@ -1,12 +1,22 @@
 mod app;
 mod components;
+mod log_buffer;
 mod views;
 
 use gpui::*;
 use gpui_component::*;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    // Set up tracing with both stdout and in-memory capture
+    let log_buf = log_buffer::new_log_buffer();
+    let capture_layer = log_buffer::LogCaptureLayer::new(log_buf.clone());
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(capture_layer)
+        .init();
 
     // Create tokio runtime for async proxy/network operations
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -22,6 +32,7 @@ fn main() {
         gpui_component::init(cx);
 
         let handle = tokio_handle.clone();
+        let buf = log_buf.clone();
         cx.spawn(async move |cx| {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -32,7 +43,7 @@ fn main() {
             };
 
             cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| app::AppState::new(window, cx, handle));
+                let view = cx.new(|cx| app::AppState::new(window, cx, handle, buf));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("Failed to open window");

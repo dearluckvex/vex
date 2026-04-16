@@ -5,6 +5,7 @@ use gpui_component::tag::{Tag, TagVariant};
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::log_buffer::SharedLogBuffer;
 use xtune_core::config::model::{
     AppConfig, Node, ProxyProtocol, RoutingRule, Subscription, TransportConfig, TransportType,
 };
@@ -87,6 +88,9 @@ pub struct AppState {
     rule_type_input: Entity<InputState>,
     rule_pattern_input: Entity<InputState>,
     rule_target_input: Entity<InputState>,
+
+    // Log viewer
+    log_buffer: SharedLogBuffer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +100,7 @@ pub enum ActiveView {
     Config,
     Rules,
     Settings,
+    Logs,
 }
 
 fn current_system_proxy_state() -> (bool, String) {
@@ -149,6 +154,7 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
         tokio_handle: tokio::runtime::Handle,
+        log_buffer: SharedLogBuffer,
     ) -> Self {
         let mut persisted = load_gui_state().unwrap_or_else(|| {
             let default_config = AppConfig::default();
@@ -222,6 +228,7 @@ impl AppState {
             rule_type_input,
             rule_pattern_input,
             rule_target_input,
+            log_buffer,
         }
     }
 
@@ -1058,7 +1065,8 @@ impl AppState {
                                 ActiveView::Settings,
                                 &active,
                                 cx,
-                            )),
+                            ))
+                            .child(self.nav_item("📜  Logs", ActiveView::Logs, &active, cx)),
                     ),
             )
             .child(
@@ -1119,6 +1127,7 @@ impl AppState {
                 ActiveView::Config => self.render_config(cx).into_any_element(),
                 ActiveView::Rules => self.render_rules(cx).into_any_element(),
                 ActiveView::Settings => self.render_settings(cx).into_any_element(),
+                ActiveView::Logs => self.render_logs(cx).into_any_element(),
             })
     }
 }
@@ -1364,7 +1373,7 @@ impl AppState {
                             .text_xs()
                             .text_color(rgb(TEXT_MUTED))
                             .mt_1()
-                            .child("Routes all TCP/UDP traffic through the proxy tunnel via a virtual network interface"),
+                            .child("Routes all TCP/UDP traffic through the proxy tunnel with built-in DNS interception"),
                     ),
             )
             // Status card
@@ -2417,6 +2426,153 @@ impl AppState {
     }
 }
 
+// === Logs View ===
+
+impl AppState {
+    fn render_logs(&mut self, cx: &mut Context<Self>) -> Div {
+        let entries: Vec<crate::log_buffer::LogEntry> = self
+            .log_buffer
+            .lock()
+            .map(|buf| buf.iter().rev().cloned().collect())
+            .unwrap_or_default();
+
+        let count = entries.len();
+
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("Logs ({})", count)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("refresh-logs")
+                                    .label("🔄 Refresh".to_string())
+                                    .ghost()
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("clear-logs")
+                                    .label("🗑 Clear".to_string())
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Ok(mut buf) = this.log_buffer.lock() {
+                                            buf.clear();
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+
+        if entries.is_empty() {
+            content = content.child(
+                self.card().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .py_8()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_lg()
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .child("No log entries yet"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(TEXT_MUTED))
+                                .child("Logs will appear here as the proxy operates"),
+                        ),
+                ),
+            );
+        } else {
+            let mut list = div()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .p_3()
+                .rounded_xl()
+                .bg(rgb(0x111827))
+                .border_1()
+                .border_color(rgb(BORDER_COLOR));
+
+            for entry in entries.iter().take(200) {
+                let (level_label, level_color) = match entry.level {
+                    tracing::Level::ERROR => ("ERR", DANGER_COLOR),
+                    tracing::Level::WARN => ("WRN", WARNING_COLOR),
+                    tracing::Level::INFO => ("INF", SUCCESS_COLOR),
+                    tracing::Level::DEBUG => ("DBG", TEXT_MUTED),
+                    tracing::Level::TRACE => ("TRC", TEXT_MUTED),
+                };
+
+                // Shorten target: e.g. "xtune_core::proxy::tun" → "proxy::tun"
+                let short_target = entry
+                    .target
+                    .strip_prefix("xtune_core::")
+                    .or_else(|| entry.target.strip_prefix("xtune_gui::"))
+                    .or_else(|| entry.target.strip_prefix("xtune::"))
+                    .unwrap_or(&entry.target);
+
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .px_2()
+                        .py_0p5()
+                        .child(
+                            div()
+                                .w(px(30.0))
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(level_color))
+                                .child(level_label.to_string()),
+                        )
+                        .child(
+                            div()
+                                .w(px(140.0))
+                                .text_xs()
+                                .text_color(rgb(TEXT_MUTED))
+                                .overflow_x_hidden()
+                                .child(short_target.to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .overflow_x_hidden()
+                                .child(entry.message.clone()),
+                        ),
+                );
+            }
+
+            content = content.child(list);
+        }
+
+        content
+    }
+}
+
 // === Settings View ===
 
 impl AppState {
@@ -2608,6 +2764,11 @@ impl AppState {
             "Idle"
         };
 
+        let latency_str = node
+            .latency_ms
+            .map(|ms| format!("{} ms", ms))
+            .unwrap_or_else(|| "Not tested".to_string());
+
         self.card()
             .child(
                 div()
@@ -2626,6 +2787,7 @@ impl AppState {
                     .child(self.info_row("Protocol", protocol_name(&node.protocol)))
                     .child(self.info_row("Server", &node.server))
                     .child(self.info_row("Port", &node.port.to_string()))
+                    .child(self.info_row("Latency", &latency_str))
                     .child(self.info_row("Transport", &transport_summary(node.transport.as_ref())))
                     .child(self.info_row("Security", &security_summary(node)))
                     .child(self.info_row("Auth", &auth_summary(&node.protocol)))

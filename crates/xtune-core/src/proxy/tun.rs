@@ -1,15 +1,16 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use etherparse::Icmpv4Header;
 use ipstack::{IpNumber, IpStackConfig, IpStackStream, TcpConfig, TcpOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 use tun::AbstractDevice;
 
 use super::connector::SharedOutbound;
+use crate::dns::DnsResolver;
 
 /// TUN device IP configuration.
 const TUN_IPV4: Ipv4Addr = Ipv4Addr::new(10, 10, 0, 2);
@@ -85,13 +86,19 @@ impl TunProxy {
         let running_clone = running.clone();
 
         let handle = tokio::spawn(async move {
-            tracing::info!("TUN accept loop started");
+            // Create DNS resolver for intercepting TUN DNS queries
+            let dns_resolver = Arc::new(DnsResolver::with_config(
+                crate::dns::china_split_dns_config(),
+            ));
+
+            tracing::info!("TUN accept loop started (with DNS interception)");
             while running_clone.load(Ordering::Relaxed) {
                 match ip_stack.accept().await {
                     Ok(stream) => {
                         let outbound = outbound.clone();
+                        let resolver = dns_resolver.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_tun_stream(stream, outbound).await {
+                            if let Err(e) = handle_tun_stream(stream, outbound, resolver).await {
                                 tracing::debug!("TUN stream error: {}", e);
                             }
                         });
@@ -148,7 +155,11 @@ impl Drop for TunProxy {
 }
 
 /// Handle a single TUN stream (TCP, UDP, or ICMP).
-async fn handle_tun_stream(stream: IpStackStream, outbound: SharedOutbound) -> Result<()> {
+async fn handle_tun_stream(
+    stream: IpStackStream,
+    outbound: SharedOutbound,
+    dns_resolver: Arc<DnsResolver>,
+) -> Result<()> {
     match stream {
         IpStackStream::Tcp(mut tcp) => {
             let dst = tcp.peer_addr();
@@ -173,6 +184,13 @@ async fn handle_tun_stream(stream: IpStackStream, outbound: SharedOutbound) -> R
         IpStackStream::Udp(mut udp) => {
             let dst = udp.peer_addr();
             let (host, port) = addr_to_host_port(&dst);
+
+            // Intercept DNS queries (UDP port 53) and resolve locally
+            if port == 53 {
+                handle_tun_dns(&mut udp, &dns_resolver).await?;
+                return Ok(());
+            }
+
             tracing::debug!("TUN UDP: -> {}:{}", host, port);
 
             match outbound.connect(&host, port).await {
@@ -205,6 +223,74 @@ async fn handle_tun_stream(stream: IpStackStream, outbound: SharedOutbound) -> R
         }
         IpStackStream::UnknownNetwork(_) => {}
     }
+    Ok(())
+}
+
+/// Handle a DNS query intercepted from TUN.
+///
+/// Reads the raw DNS packet, extracts the domain, resolves it using
+/// the built-in DnsResolver (bypassing the tunnel), and writes back
+/// a synthesized DNS response.
+async fn handle_tun_dns<S>(udp: &mut S, resolver: &DnsResolver) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 1500];
+    let n = udp.read(&mut buf).await?;
+    if n < 12 {
+        return Ok(());
+    }
+    let query = &buf[..n];
+
+    match crate::dns::parse_dns_query(query) {
+        Ok((domain, qtype)) => {
+            tracing::debug!("TUN DNS: {} (type {})", domain, qtype);
+
+            let timeout = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                resolver.resolve(&domain),
+            );
+
+            match timeout.await {
+                Ok(Ok(addrs)) => {
+                    // Filter by query type: A (1) → IPv4 only, AAAA (28) → IPv6 only
+                    let filtered: Vec<IpAddr> = match qtype {
+                        1 => addrs.into_iter().filter(|a| a.is_ipv4()).collect(),
+                        28 => addrs.into_iter().filter(|a| a.is_ipv6()).collect(),
+                        _ => addrs,
+                    };
+                    match crate::dns::build_dns_response(query, &filtered) {
+                        Ok(resp) => {
+                            udp.write_all(&resp).await?;
+                        }
+                        Err(e) => {
+                            tracing::debug!("TUN DNS response build error for {}: {}", domain, e);
+                            let err_resp = crate::dns::build_dns_error_response(query, 2);
+                            let _ = udp.write_all(&err_resp).await;
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("TUN DNS resolve error for {}: {}", domain, e);
+                    // SERVFAIL
+                    let err_resp = crate::dns::build_dns_error_response(query, 2);
+                    let _ = udp.write_all(&err_resp).await;
+                }
+                Err(_) => {
+                    tracing::debug!("TUN DNS timeout for {}", domain);
+                    let err_resp = crate::dns::build_dns_error_response(query, 2);
+                    let _ = udp.write_all(&err_resp).await;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!("TUN DNS parse error: {}", e);
+            let err_resp = crate::dns::build_dns_error_response(query, 1);
+            let _ = udp.write_all(&err_resp).await;
+        }
+    }
+
+    let _ = udp.shutdown().await;
     Ok(())
 }
 

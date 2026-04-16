@@ -365,6 +365,129 @@ fn skip_dns_name(data: &[u8], mut pos: usize) -> Result<usize> {
     Ok(pos)
 }
 
+/// Extract the queried domain name and query type from a raw DNS packet.
+///
+/// Returns `(domain, qtype)` where qtype is 1 for A, 28 for AAAA, etc.
+pub fn parse_dns_query(data: &[u8]) -> Result<(String, u16)> {
+    if data.len() < 12 {
+        bail!("DNS packet too short");
+    }
+    let mut pos = 12; // skip header
+    let mut labels: Vec<String> = Vec::new();
+    loop {
+        if pos >= data.len() {
+            bail!("DNS question extends beyond packet");
+        }
+        let len = data[pos] as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        if len & 0xC0 == 0xC0 {
+            bail!("Unexpected compression pointer in question");
+        }
+        pos += 1;
+        if pos + len > data.len() {
+            bail!("DNS label extends beyond packet");
+        }
+        labels.push(String::from_utf8_lossy(&data[pos..pos + len]).to_string());
+        pos += len;
+    }
+    if pos + 4 > data.len() {
+        bail!("DNS question QTYPE/QCLASS missing");
+    }
+    let qtype = u16::from_be_bytes([data[pos], data[pos + 1]]);
+    let domain = labels.join(".");
+    Ok((domain, qtype))
+}
+
+/// Build a DNS response packet from a query packet and a set of resolved IPs.
+///
+/// Preserves the query ID and question section, adds A/AAAA answers.
+pub fn build_dns_response(query: &[u8], addresses: &[IpAddr]) -> Result<Vec<u8>> {
+    if query.len() < 12 {
+        bail!("Query packet too short to build response");
+    }
+
+    // Find end of question section
+    let mut qend = 12;
+    loop {
+        if qend >= query.len() {
+            bail!("Malformed DNS query: question section overflows");
+        }
+        let len = query[qend] as usize;
+        if len == 0 {
+            qend += 1; // null terminator
+            break;
+        }
+        if len & 0xC0 == 0xC0 {
+            qend += 2;
+            break;
+        }
+        qend += 1 + len;
+    }
+    qend += 4; // QTYPE + QCLASS
+
+    let an_count = addresses.len() as u16;
+    let mut resp = Vec::with_capacity(qend + addresses.len() * 16 + 32);
+
+    // Copy header from query
+    resp.extend_from_slice(&query[..2]); // ID
+
+    // Flags: response, recursion desired+available, no error
+    resp.extend_from_slice(&[0x81, 0x80]);
+
+    // QDCOUNT = 1
+    resp.extend_from_slice(&[0x00, 0x01]);
+    // ANCOUNT
+    resp.extend_from_slice(&an_count.to_be_bytes());
+    // NSCOUNT, ARCOUNT = 0
+    resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+    // Copy question section from query
+    resp.extend_from_slice(&query[12..qend]);
+
+    // Answer records
+    let ttl: u32 = 300;
+    for addr in addresses {
+        // Name pointer to question
+        resp.extend_from_slice(&[0xC0, 0x0C]);
+        match addr {
+            IpAddr::V4(v4) => {
+                resp.extend_from_slice(&[0x00, 0x01]); // A
+                resp.extend_from_slice(&[0x00, 0x01]); // IN
+                resp.extend_from_slice(&ttl.to_be_bytes());
+                resp.extend_from_slice(&[0x00, 0x04]); // RDLENGTH
+                resp.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                resp.extend_from_slice(&[0x00, 0x1C]); // AAAA
+                resp.extend_from_slice(&[0x00, 0x01]); // IN
+                resp.extend_from_slice(&ttl.to_be_bytes());
+                resp.extend_from_slice(&[0x00, 0x10]); // RDLENGTH
+                resp.extend_from_slice(&v6.octets());
+            }
+        }
+    }
+
+    Ok(resp)
+}
+
+/// Build a DNS NXDOMAIN (or SERVFAIL) error response from a query packet.
+pub fn build_dns_error_response(query: &[u8], rcode: u8) -> Vec<u8> {
+    if query.len() < 12 {
+        return Vec::new();
+    }
+    let mut resp = query.to_vec();
+    // Set QR=1 (response), keep RD, set RA, set rcode
+    resp[2] = 0x81;
+    resp[3] = 0x80 | (rcode & 0x0F);
+    // Zero out ANCOUNT
+    resp[6] = 0;
+    resp[7] = 0;
+    resp
+}
+
 /// Common China domain suffixes for DNS splitting.
 pub fn china_domain_suffixes() -> Vec<String> {
     vec![
@@ -509,5 +632,37 @@ mod tests {
 
         let result = parse_dns_response(&resp);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dns_query_and_build_response() {
+        // Build a query for "example.com" A record
+        let query = build_dns_query("example.com", 1);
+        let (domain, qtype) = parse_dns_query(&query).unwrap();
+        assert_eq!(domain, "example.com");
+        assert_eq!(qtype, 1);
+
+        // Build a response with one A record
+        let addrs = vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))];
+        let resp = build_dns_response(&query, &addrs).unwrap();
+
+        // Verify it's a valid DNS response
+        assert!(resp.len() > 12);
+        // QR bit should be set (response)
+        assert_eq!(resp[2] & 0x80, 0x80);
+        // ANCOUNT should be 1
+        assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1);
+
+        // Parse the response to extract the IP
+        let parsed = parse_dns_response(&resp).unwrap();
+        assert_eq!(parsed, addrs);
+    }
+
+    #[test]
+    fn test_build_dns_error_response() {
+        let query = build_dns_query("fail.example.com", 1);
+        let resp = build_dns_error_response(&query, 2); // SERVFAIL
+        assert!(resp.len() >= 12);
+        assert_eq!(resp[3] & 0x0F, 2); // rcode = SERVFAIL
     }
 }

@@ -36,7 +36,8 @@ pub use proxy::vmess::VMessOutbound;
 pub use proxy::{ProxyState, ProxyStats};
 
 pub use dns::{
-    DnsConfig, DnsGroup, DnsResolver, DnsServer, china_domain_suffixes, china_split_dns_config,
+    DnsConfig, DnsGroup, DnsResolver, DnsServer, build_dns_error_response, build_dns_response,
+    china_domain_suffixes, china_split_dns_config, parse_dns_query,
 };
 
 pub use router::{GeoIpDb, MatchRule, RouteAction, Router, RuleSet, china_direct_ruleset};
