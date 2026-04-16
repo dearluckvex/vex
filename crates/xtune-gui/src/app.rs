@@ -391,7 +391,7 @@ impl AppState {
                         verify_local_http_proxy(
                             &addr_for_check,
                             http_port,
-                            std::time::Duration::from_secs(15),
+                            std::time::Duration::from_secs(30),
                         )
                         .await
                     })
@@ -613,30 +613,10 @@ impl AppState {
         cx.spawn(async move |weak, cx| {
             let result = handle
                 .spawn(async move {
-                    let outbound = match create_outbound(&node) {
-                        Ok(o) => o,
-                        Err(e) => {
-                            // Fallback: raw TCP latency if outbound creation fails
-                            tracing::warn!(
-                                "Cannot create outbound for {}: {}, falling back to TCP",
-                                node.name,
-                                e
-                            );
-                            let addr = format!("{}:{}", node.server, node.port);
-                            let start = std::time::Instant::now();
-                            let timeout = tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
-                                tokio::net::TcpStream::connect(&addr),
-                            )
-                            .await;
-                            return match timeout {
-                                Ok(Ok(_)) => Ok(start.elapsed().as_millis() as u32),
-                                Ok(Err(e)) => Err(format!("TCP: {}", e)),
-                                Err(_) => Err("TCP connect timed out (5s)".to_string()),
-                            };
-                        }
-                    };
-                    xtune_core::latency_test_node(&outbound, 15)
+                    // Use TCP-level latency (like Karing) — measures raw TCP
+                    // handshake to the proxy server. This is fast and comparable
+                    // to other proxy clients.
+                    xtune_core::tcp_latency_test(&node.server, node.port, 10)
                         .await
                         .map_err(|e| format!("{:#}", e))
                 })

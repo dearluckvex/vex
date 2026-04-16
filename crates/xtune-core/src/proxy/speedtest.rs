@@ -1,5 +1,6 @@
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use super::connector::SharedOutbound;
 
@@ -80,6 +81,21 @@ pub async fn latency_test_node(outbound: &SharedOutbound, timeout_secs: u64) -> 
     let mut buf = [0u8; 64];
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf)).await;
 
+    Ok(start.elapsed().as_millis() as u32)
+}
+
+/// Perform a fast TCP-only latency test by connecting directly to the server.
+///
+/// This measures just the raw TCP handshake latency to the proxy server,
+/// similar to what Karing and other proxy clients display as "latency".
+/// It does NOT go through the proxy protocol or connect to a target.
+pub async fn tcp_latency_test(server: &str, port: u16, timeout_secs: u64) -> Result<u32> {
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let addr = format!("{}:{}", server, port);
+    let start = std::time::Instant::now();
+    let _stream = tokio::time::timeout(timeout, TcpStream::connect(&addr))
+        .await
+        .map_err(|_| anyhow::anyhow!("TCP connect to {} timed out ({}s)", addr, timeout_secs))??;
     Ok(start.elapsed().as_millis() as u32)
 }
 

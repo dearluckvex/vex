@@ -23,7 +23,7 @@ pub use proxy::hysteria2::Hysteria2Outbound;
 pub use proxy::routing::RoutingOutbound;
 pub use proxy::service::ProxyService;
 pub use proxy::socks5::Socks5Server;
-pub use proxy::speedtest::{SpeedTestResult, latency_test_node, speed_test_node};
+pub use proxy::speedtest::{SpeedTestResult, latency_test_node, speed_test_node, tcp_latency_test};
 pub use proxy::ss::SsOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::tuic::TuicOutbound;
