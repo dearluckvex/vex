@@ -1069,6 +1069,136 @@ fn windows_is_elevated() -> Option<bool> {
     Some(unsafe { IsUserAnAdmin() != 0 })
 }
 
+// === WinTun DLL auto-install (Windows only) ===
+
+const WINTUN_DLL: &str = "wintun.dll";
+const WINTUN_ZIP_URL: &str = "https://www.wintun.net/builds/wintun-0.14.1.zip";
+
+/// Check if wintun.dll is available (exists next to the executable or in PATH).
+pub fn wintun_dll_available() -> bool {
+    #[cfg(not(target_os = "windows"))]
+    {
+        true // not needed on non-Windows
+    }
+    #[cfg(target_os = "windows")]
+    {
+        wintun_dll_path().map(|p| p.exists()).unwrap_or(false)
+    }
+}
+
+/// Path where wintun.dll should be placed (next to the executable).
+fn wintun_dll_path() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join(WINTUN_DLL)))
+}
+
+/// Ensure wintun.dll is available. Downloads and extracts if missing.
+/// This is an async function that downloads from the official wintun website.
+#[cfg(target_os = "windows")]
+pub async fn ensure_wintun_dll() -> Result<std::path::PathBuf> {
+    let dll_path = wintun_dll_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine executable directory"))?;
+
+    if dll_path.exists() {
+        tracing::info!("wintun.dll found at {}", dll_path.display());
+        return Ok(dll_path);
+    }
+
+    tracing::info!("wintun.dll not found, downloading from {}", WINTUN_ZIP_URL);
+
+    let response = reqwest::get(WINTUN_ZIP_URL)
+        .await
+        .context("failed to download wintun.dll from wintun.net")?;
+
+    if !response.status().is_success() {
+        bail!(
+            "wintun download failed with HTTP status {}",
+            response.status()
+        );
+    }
+
+    let zip_bytes = response
+        .bytes()
+        .await
+        .context("failed to read wintun download response")?;
+
+    tracing::info!("Downloaded wintun.zip ({} bytes), extracting...", zip_bytes.len());
+
+    // Save zip to temp and extract via PowerShell
+    let temp_dir = std::env::temp_dir();
+    let zip_path = temp_dir.join("wintun_xtune.zip");
+    let extract_dir = temp_dir.join("wintun_xtune_extract");
+
+    std::fs::write(&zip_path, &zip_bytes)
+        .context("failed to write wintun.zip to temp directory")?;
+
+    // Clean up old extract directory
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    // Use PowerShell to extract (available on all modern Windows)
+    let ps_script = format!(
+        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+        zip_path.display(),
+        extract_dir.display()
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        .output()
+        .context("failed to run PowerShell for ZIP extraction")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("PowerShell Expand-Archive failed: {}", stderr.trim());
+    }
+
+    // Determine architecture
+    let arch = if cfg!(target_arch = "x86_64") {
+        "amd64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86") {
+        "x86"
+    } else {
+        "amd64" // default
+    };
+
+    let extracted_dll = extract_dir
+        .join("wintun")
+        .join("bin")
+        .join(arch)
+        .join(WINTUN_DLL);
+
+    if !extracted_dll.exists() {
+        bail!(
+            "wintun.dll not found in extracted archive at expected path: {}",
+            extracted_dll.display()
+        );
+    }
+
+    std::fs::copy(&extracted_dll, &dll_path).with_context(|| {
+        format!(
+            "failed to copy wintun.dll from {} to {}",
+            extracted_dll.display(),
+            dll_path.display()
+        )
+    })?;
+
+    // Cleanup temp files
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    tracing::info!("wintun.dll installed at {}", dll_path.display());
+    Ok(dll_path)
+}
+
+/// On non-Windows platforms, this is a no-op.
+#[cfg(not(target_os = "windows"))]
+pub async fn ensure_wintun_dll() -> Result<std::path::PathBuf> {
+    Ok(std::path::PathBuf::from("/dev/net/tun"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

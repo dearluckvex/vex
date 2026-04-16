@@ -803,11 +803,46 @@ impl AppState {
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         self.tun_stop_tx = Some(stop_tx);
-        self.tun_status = "Starting TUN...".to_string();
+        self.tun_status = "Preparing TUN driver...".to_string();
         cx.notify();
 
         let handle = self.tokio_handle.clone();
         cx.spawn(async move |weak, cx| {
+            // Step 1: ensure wintun.dll (Windows only, no-op elsewhere)
+            if !xtune_core::wintun_dll_available() {
+                weak.update(cx, |this: &mut AppState, cx| {
+                    this.tun_status = "Downloading WinTun driver...".to_string();
+                    cx.notify();
+                }).ok();
+
+                let dll_result = handle.spawn(xtune_core::ensure_wintun_dll()).await;
+                match dll_result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        weak.update(cx, |this: &mut AppState, cx| {
+                            this.tun_stop_tx = None;
+                            this.tun_status = format!("❌ WinTun install failed: {:#}", e);
+                            cx.notify();
+                        }).ok();
+                        return;
+                    }
+                    Err(e) => {
+                        weak.update(cx, |this: &mut AppState, cx| {
+                            this.tun_stop_tx = None;
+                            this.tun_status = format!("❌ WinTun task error: {}", e);
+                            cx.notify();
+                        }).ok();
+                        return;
+                    }
+                }
+            }
+
+            weak.update(cx, |this: &mut AppState, cx| {
+                this.tun_status = "Starting TUN...".to_string();
+                cx.notify();
+            }).ok();
+
+            // Step 2: Create TUN device
             let result = handle
                 .spawn(async move {
                     // Wrap TUN creation with a timeout to prevent indefinite blocking
