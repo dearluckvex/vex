@@ -29,7 +29,12 @@ pub fn get_system_proxy() -> Result<SystemProxyConfig> {
     ensure_supported()?;
     sysproxy::Sysproxy::get_system_proxy()
         .map(Into::into)
-        .context("failed to read system proxy")
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to read system proxy: {}. On Windows, try running as Administrator.",
+                e
+            )
+        })
 }
 
 pub fn set_system_proxy(host: &str, port: u16) -> Result<()> {
@@ -51,7 +56,12 @@ pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Resu
         bypass: bypass.to_string(),
     }
     .set_system_proxy()
-    .context("failed to set system proxy")
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "failed to set system proxy ({}:{}) — {}\nOn Windows, ensure the app runs as Administrator.",
+            host, port, e
+        )
+    })
 }
 
 pub fn clear_system_proxy() -> Result<()> {

@@ -117,7 +117,7 @@ fn current_system_proxy_state() -> (bool, String) {
             ),
         ),
         Ok(_) => (false, "Disabled".to_string()),
-        Err(err) => (false, format!("Error: {}", err)),
+        Err(err) => (false, format!("Error: {:#}", err)),
     }
 }
 
@@ -391,7 +391,7 @@ impl AppState {
                         verify_local_http_proxy(
                             &addr_for_check,
                             http_port,
-                            std::time::Duration::from_secs(10),
+                            std::time::Duration::from_secs(15),
                         )
                         .await
                     })
@@ -726,7 +726,7 @@ impl AppState {
                 self.system_proxy_managed_by_app = false;
                 self.refresh_system_proxy_status(None, cx);
             }
-            Err(err) => self.refresh_system_proxy_status(Some(err.to_string()), cx),
+            Err(err) => self.refresh_system_proxy_status(Some(format!("{:#}", err)), cx),
         }
     }
 
@@ -736,7 +736,7 @@ impl AppState {
                 self.system_proxy_managed_by_app = false;
                 self.refresh_system_proxy_status(None, cx);
             }
-            Err(err) => self.refresh_system_proxy_status(Some(err.to_string()), cx),
+            Err(err) => self.refresh_system_proxy_status(Some(format!("{:#}", err)), cx),
         }
     }
 
@@ -2847,25 +2847,33 @@ async fn verify_local_http_proxy(
     http_port: u16,
     timeout: std::time::Duration,
 ) -> anyhow::Result<String> {
+    // Use a short timeout for the local TCP connect (proxy should be on localhost)
+    let connect_timeout = std::time::Duration::from_secs(3);
     let mut stream = tokio::time::timeout(
-        timeout,
+        connect_timeout,
         tokio::net::TcpStream::connect((listen_addr, http_port)),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("timed out connecting to local HTTP proxy"))??;
+    .map_err(|_| anyhow::anyhow!("local proxy not responding on {}:{}", listen_addr, http_port))??;
 
+    // CONNECT to a reliable connectivity test endpoint
     stream
         .write_all(
-            b"CONNECT www.google.com:443 HTTP/1.1\r\nHost: www.google.com:443\r\nProxy-Connection: keep-alive\r\n\r\n",
+            b"CONNECT www.gstatic.com:443 HTTP/1.1\r\nHost: www.gstatic.com:443\r\nProxy-Connection: keep-alive\r\n\r\n",
         )
         .await?;
 
     let mut buf = vec![0u8; 4096];
     let read = tokio::time::timeout(timeout, stream.read(&mut buf))
         .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for proxy response"))??;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "proxy did not respond within {}s — node may be unreachable or slow",
+                timeout.as_secs()
+            )
+        })??;
     if read == 0 {
-        anyhow::bail!("local proxy returned no response");
+        anyhow::bail!("proxy closed connection without a response");
     }
 
     let response = String::from_utf8_lossy(&buf[..read]);
@@ -2879,44 +2887,44 @@ async fn verify_local_http_proxy(
         anyhow::bail!("unexpected proxy response: {}", status_line);
     }
     if !status_line.contains(" 200 ") {
-        anyhow::bail!("google tunnel failed: {}", status_line);
+        anyhow::bail!("tunnel establishment failed: {}", status_line);
     }
 
-    // Phase 2: Perform a TLS handshake over the tunnel to fully verify connectivity
+    // Phase 2: TLS handshake to verify end-to-end connectivity
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let tls_config = tokio_rustls::rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
-    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from("www.google.com")
+    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from("www.gstatic.com")
         .map_err(|e| anyhow::anyhow!("invalid server name: {}", e))?;
 
     let tls_stream =
         tokio::time::timeout(timeout, connector.connect(server_name.to_owned(), stream))
             .await
-            .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
+            .map_err(|_| anyhow::anyhow!("TLS handshake timed out — node may be too slow"))?
             .map_err(|e| anyhow::anyhow!("TLS handshake failed: {}", e))?;
 
     let (mut reader, mut writer) = tokio::io::split(tls_stream);
     writer
         .write_all(
-            b"GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n",
+            b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n",
         )
         .await?;
 
     let mut resp_buf = vec![0u8; 1024];
     let n = tokio::time::timeout(timeout, reader.read(&mut resp_buf))
         .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for Google response"))??;
+        .map_err(|_| anyhow::anyhow!("remote server did not respond"))??;
 
     let resp = String::from_utf8_lossy(&resp_buf[..n]);
     let resp_status = resp.lines().next().unwrap_or_default().trim().to_string();
 
     if resp_status.contains("204") || resp_status.contains("200") {
-        Ok(format!("Google reachable via TLS ({})", resp_status))
+        Ok(format!("Connectivity verified ({})", resp_status))
     } else {
-        Ok(format!("Tunnel OK but Google returned: {}", resp_status))
+        Ok(format!("Tunnel OK but server returned: {}", resp_status))
     }
 }
 

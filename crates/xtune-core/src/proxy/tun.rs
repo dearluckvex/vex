@@ -1052,7 +1052,26 @@ fn unix_is_root() -> bool {
 
 #[cfg(target_os = "windows")]
 fn windows_is_elevated() -> Option<bool> {
-    let output = std::process::Command::new("powershell")
+    // Method 1: `net session` — fast and reliable, fails with non-zero exit
+    // if the process is not elevated
+    if let Ok(output) = std::process::Command::new("net")
+        .arg("session")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        return Some(output.success());
+    }
+
+    // Method 2: Try writing to a protected directory
+    let test_path = r"C:\Windows\System32\xtune_priv_test.tmp";
+    if let Ok(_) = std::fs::write(test_path, b"test") {
+        let _ = std::fs::remove_file(test_path);
+        return Some(true);
+    }
+
+    // Method 3: PowerShell fallback
+    if let Ok(output) = std::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1060,17 +1079,17 @@ fn windows_is_elevated() -> Option<bool> {
             "$p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
         ])
         .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    {
+        if output.status.success() {
+            return match String::from_utf8_lossy(&output.stdout).trim() {
+                "True" => Some(true),
+                "False" => Some(false),
+                _ => None,
+            };
+        }
     }
 
-    match String::from_utf8_lossy(&output.stdout).trim() {
-        "True" => Some(true),
-        "False" => Some(false),
-        _ => None,
-    }
+    None
 }
 
 #[cfg(test)]
