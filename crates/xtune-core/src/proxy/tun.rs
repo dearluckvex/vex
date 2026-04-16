@@ -947,10 +947,34 @@ fn validate_tun_environment() -> Result<()> {
     }
 
     #[cfg(target_os = "linux")]
-    if !std::path::Path::new("/dev/net/tun").exists() {
-        bail!(
-            "TUN device node /dev/net/tun is missing. Load the tun kernel module and ensure the device node exists."
-        );
+    {
+        if !std::path::Path::new("/dev/net/tun").exists() {
+            bail!(
+                "TUN device node /dev/net/tun is missing. Load the tun kernel module and ensure the device node exists."
+            );
+        }
+
+        // Check that required routing commands are available
+        let mut missing = Vec::new();
+        if find_cmd("ip").is_none() {
+            missing.push("ip (install: apt install iproute2 / dnf install iproute)");
+        }
+        if find_cmd("sysctl").is_none() {
+            missing.push("sysctl (install: apt install procps / dnf install procps-ng)");
+        }
+        if !missing.is_empty() {
+            bail!(
+                "TUN mode requires the following commands: {}",
+                missing.join(", ")
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if find_cmd("route").is_none() {
+            bail!("TUN mode requires the 'route' command (should be available by default on Windows)");
+        }
     }
 
     match current_privilege_status() {
@@ -1046,5 +1070,92 @@ fn windows_is_elevated() -> Option<bool> {
         "True" => Some(true),
         "False" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tun_supported() {
+        // On Linux/macOS/Windows, TUN should be reported as supported
+        assert!(tun_supported());
+    }
+
+    #[test]
+    fn test_tun_requirements_not_empty() {
+        let req = tun_requirements();
+        assert!(!req.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_to_ipv4() {
+        let addrs = resolve_to_ipv4("localhost");
+        assert!(
+            addrs.contains(&Ipv4Addr::LOCALHOST),
+            "localhost should resolve to 127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn test_default_gateway_detection() {
+        // This test verifies gateway detection works on the current system
+        match get_default_gateway() {
+            Ok((gw, iface)) => {
+                assert!(!iface.is_empty(), "interface name should not be empty");
+                // Gateway should not be 0.0.0.0 (that indicates no gateway)
+                tracing::info!("Detected gateway: {} via {}", gw, iface);
+            }
+            Err(e) => {
+                // Acceptable in some CI environments with no default route
+                tracing::warn!("No default gateway (may be expected in CI): {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_tun_environment() {
+        // Just verify it doesn't panic; result depends on the runtime environment
+        let result = validate_tun_environment();
+        tracing::info!("validate_tun_environment: {:?}", result);
+    }
+
+    #[test]
+    fn test_addr_to_host_port() {
+        let addr: SocketAddr = "1.2.3.4:443".parse().unwrap();
+        let (host, port) = addr_to_host_port(&addr);
+        assert_eq!(host, "1.2.3.4");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_find_cmd_known() {
+        // `ls` should be findable on any Unix system
+        #[cfg(not(target_os = "windows"))]
+        {
+            let result = find_cmd("ls");
+            assert!(result.is_some(), "ls should be found on Unix");
+        }
+    }
+
+    /// Smoke test: create a TUN device, verify name, then stop.
+    /// Requires root and /dev/net/tun — skipped automatically if unavailable.
+    #[tokio::test]
+    async fn test_tun_create_and_stop() {
+        if validate_tun_environment().is_err() {
+            eprintln!("Skipping TUN smoke test (environment not suitable)");
+            return;
+        }
+
+        let outbound = SharedOutbound::direct();
+        let tun = TunProxy::start(outbound).expect("TUN creation should succeed");
+        let name = tun.tun_name().to_string();
+        assert!(!name.is_empty(), "TUN device name should not be empty");
+
+        let info = tun.route_info();
+        assert_eq!(info.tun_gateway, TUN_GATEWAY);
+
+        tun.stop().await;
     }
 }
