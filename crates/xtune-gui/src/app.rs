@@ -613,10 +613,13 @@ impl AppState {
         cx.spawn(async move |weak, cx| {
             let result = handle
                 .spawn(async move {
-                    // Use TCP-level latency (like Karing) — measures raw TCP
-                    // handshake to the proxy server. This is fast and comparable
-                    // to other proxy clients.
-                    xtune_core::tcp_latency_test(&node.server, node.port, 10)
+                    // Use HTTP latency through proxy outbound with warmup.
+                    // This creates a fresh outbound, warms up the connection
+                    // (QUIC handshake for TUIC), then measures a second connection.
+                    // Gives realistic "warm" latency (100-500ms), not raw TCP (1ms).
+                    let outbound = xtune_core::create_outbound(&node)
+                        .map_err(|e| format!("{:#}", e))?;
+                    xtune_core::http_latency_test(&outbound, 15)
                         .await
                         .map_err(|e| format!("{:#}", e))
                 })
@@ -2902,7 +2905,7 @@ async fn verify_local_http_proxy(
     let resp_status = resp.lines().next().unwrap_or_default().trim().to_string();
 
     if resp_status.contains("204") || resp_status.contains("200") {
-        Ok(format!("Connectivity verified ({})", resp_status))
+        Ok("✓ Connected — internet access verified".to_string())
     } else {
         Ok(format!("Tunnel OK but server returned: {}", resp_status))
     }

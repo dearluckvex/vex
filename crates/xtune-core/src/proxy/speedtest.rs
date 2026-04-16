@@ -99,6 +99,55 @@ pub async fn tcp_latency_test(server: &str, port: u16, timeout_secs: u64) -> Res
     Ok(start.elapsed().as_millis() as u32)
 }
 
+/// Perform an HTTP latency test through a proxy outbound with warmup.
+///
+/// Does two connections: a warmup (to establish QUIC/TLS sessions for
+/// protocols like TUIC) and a measurement. This gives a realistic "warm"
+/// latency that represents actual browsing performance.
+///
+/// Typical results: 100-500ms for TUIC/Hysteria2, 50-200ms for TCP protocols.
+pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> Result<u32> {
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+
+    // Phase 1: Warmup — establish underlying connections (QUIC session, etc.)
+    let warmup = tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80)).await;
+    match warmup {
+        Ok(Ok(mut s)) => {
+            let _ = s
+                .write_all(
+                    b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            let mut buf = [0u8; 128];
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), s.read(&mut buf)).await;
+        }
+        Ok(Err(e)) => return Err(anyhow::anyhow!("connection failed: {:#}", e)),
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "connection timed out ({}s)",
+                timeout_secs
+            ))
+        }
+    }
+
+    // Phase 2: Measure — connect again using cached/warm connections
+    let start = std::time::Instant::now();
+    let mut stream = tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80))
+        .await
+        .map_err(|_| anyhow::anyhow!("connection timed out"))??;
+
+    stream
+        .write_all(
+            b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+    let mut buf = [0u8; 128];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf)).await;
+
+    Ok(start.elapsed().as_millis() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

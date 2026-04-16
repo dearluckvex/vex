@@ -57,10 +57,18 @@ pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Resu
     }
     .set_system_proxy()
     .map_err(|e| {
-        anyhow::anyhow!(
-            "failed to set system proxy ({}:{}) — {}\nOn Windows, ensure the app runs as Administrator.",
-            host, port, e
-        )
+        let msg = format!("{}", e);
+        if msg.contains("denied") || msg.contains("permission") || msg.contains("access") {
+            anyhow::anyhow!(
+                "failed to set system proxy ({}:{}) — {}\nTry running as Administrator.",
+                host, port, e
+            )
+        } else {
+            anyhow::anyhow!(
+                "failed to set system proxy ({}:{}) — {}",
+                host, port, e
+            )
+        }
     })
 }
 
