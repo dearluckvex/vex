@@ -22,6 +22,21 @@
    - Logs：实时日志查看器（tracing捕获、级别着色、刷新/清除）
    - 状态反馈：颜色编码的验证信息和连接状态
 
+## issue.md 追加修复
+1. ✅ Windows管理员权限检测 — 改用Win32 API IsUserAnAdmin()
+   - 原方案(net session/System32写入/PowerShell)不可靠
+   - 新方案直接调用shell32.dll的IsUserAnAdmin()，最可靠
+
+2. ✅ 延迟测试优化 — 改用HTTP延迟+预热
+   - 原方案(raw TCP 1-2ms)太低，不反映实际代理性能
+   - 新方案：创建outbound → 预热连接(建立QUIC) → 测量第二次连接
+   - 结果：TUIC约100-500ms，TCP协议约50-200ms
+
+3. ✅ 连通性验证消息优化
+   - 204 No Content 不再显示给用户（用户以为是错误）
+   - 改为 "✓ Connected — internet access verified"
+   - 系统代理错误消息按实际错误内容提示
+
 ## 待优化（可选）
 - 手动添加/编辑节点表单（当前仅支持订阅导入）
 - 规则编辑功能（当前需删除后重新添加）
