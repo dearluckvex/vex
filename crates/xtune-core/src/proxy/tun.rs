@@ -1054,7 +1054,7 @@ fn unix_is_root() -> bool {
 fn windows_is_elevated() -> Option<bool> {
     // Use Win32 API — most reliable way to check admin privileges
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn IsUserAnAdmin() -> i32;
     }
     Some(unsafe { IsUserAnAdmin() != 0 })
