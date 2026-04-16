@@ -1,3 +1,28 @@
-1. 现在原有连接节点马来西亚节点也无法连接了
-2. 继续完善tun模式，主要要兼容linux mac window,不要总是提示权限错误，并且始终不可用
-3. gui的库要用现代化的gpui，可以用gpui-componet，样式要现代化美观，而不是和古董界面一样，同时所有的功能都要实现
+1. ✅ 马来西亚节点无法连接 — 已修复
+   - 根因：TCP连接无超时，TcpStream::connect() 可无限挂起
+   - 修复：所有TCP协议(Trojan/VLESS/VMess/Direct)添加10s连接超时
+   - 增加：TCP nodelay优化、anyhow Context错误链、GUI错误详情展示
+
+2. ✅ TUN模式跨平台完善 — 已修复
+   - 设备名检测：改用 tun_name() 替代脆弱的接口扫描
+   - 权限检测：启动前检查 root/Administrator 权限，给出明确提示
+   - 路由守卫：TunRouteGuard 幂等恢复，避免重复清理
+   - DNS拦截：TUN内截获UDP:53，使用内置DnsResolver本地解析
+     (中国域名走223.5.5.5/119.29.29.29，国际域名走8.8.8.8/1.1.1.1)
+   - 跨平台：Linux/macOS/Windows 各有适配的路由和权限逻辑
+
+3. ✅ GUI现代化 — 已完成
+   - 使用 GPUI + gpui-component 构建现代界面
+   - 6个标签页：Home / Nodes / Config / Rules / Settings / Logs
+   - Home：代理状态卡片、流量统计、TUN模式卡片
+   - Nodes：节点列表、延迟测试、订阅导入、节点详情面板
+   - Config：配置文件编辑器
+   - Rules：规则管理（添加/删除）、规则模式选择(Direct/Proxy/Rule)
+   - Settings：服务器/端口配置、验证、自动重启
+   - Logs：实时日志查看器（tracing捕获、级别着色、刷新/清除）
+   - 状态反馈：颜色编码的验证信息和连接状态
+
+## 待优化（可选）
+- 手动添加/编辑节点表单（当前仅支持订阅导入）
+- 规则编辑功能（当前需删除后重新添加）
+- 节点和规则列表的搜索/过滤
