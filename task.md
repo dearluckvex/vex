@@ -41,3 +41,17 @@
 - 手动添加/编辑节点表单（当前仅支持订阅导入）
 - 规则编辑功能（当前需删除后重新添加）
 - 节点和规则列表的搜索/过滤
+
+## 订阅导入兼容性修复
+4. ✅ VLESS Reality 无 short-id 支持
+   - 真实订阅源 reality-opts 只有 public-key，无 short-id
+   - 原代码要求两者同时存在才启用 Reality 传输
+   - 修复：short-id 缺省时默认为空字符串
+
+5. ✅ Hysteria2 sni 字段支持
+   - 订阅源使用 `sni` 字段指定 SNI，原代码只读 `servername`
+   - 修复：ClashProxy 增加 `sni` 字段，TLS/Reality 均支持 sni 回退
+
+6. ✅ SS + shadow-tls 插件处理
+   - 订阅源 SS 节点使用 shadow-tls 插件包装（不支持）
+   - 修复：解析 plugin 字段，跳过使用不支持插件的节点并记录日志

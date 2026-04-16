@@ -33,6 +33,7 @@ struct ClashProxy {
     #[serde(default)]
     tls: bool,
     servername: Option<String>,
+    sni: Option<String>,
     #[serde(rename = "skip-cert-verify", default)]
     skip_cert_verify: bool,
     alpn: Option<Vec<String>>,
@@ -51,6 +52,13 @@ struct ClashProxy {
     // UDP
     #[serde(default)]
     udp: Option<bool>,
+    // SS plugin (e.g. shadow-tls)
+    plugin: Option<String>,
+    #[serde(rename = "plugin-opts")]
+    plugin_opts: Option<serde_yaml::Value>,
+    // Hysteria2 bandwidth
+    up: Option<String>,
+    down: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +112,14 @@ fn convert_clash_proxy(proxy: &ClashProxy) -> Result<Node> {
 
     let protocol = match proxy.proxy_type.as_str() {
         "ss" => {
+            // Skip SS nodes with unsupported plugins (e.g. shadow-tls)
+            if let Some(ref plugin) = proxy.plugin {
+                anyhow::bail!(
+                    "SS node '{}' uses unsupported plugin '{}'",
+                    proxy.name,
+                    plugin
+                );
+            }
             let cipher = proxy.cipher.as_ref().context("SS missing cipher")?.clone();
             let password = proxy
                 .password
@@ -194,15 +210,15 @@ fn build_transport(proxy: &ClashProxy) -> Option<TransportConfig> {
 
     // Reality transport
     if let Some(ref reality) = proxy.reality_opts {
-        if let (Some(pk), Some(sid)) = (&reality.public_key, &reality.short_id) {
+        if let Some(pk) = &reality.public_key {
             return Some(TransportConfig {
                 transport_type: TransportType::Reality,
                 tls: None,
                 ws: None,
                 reality: Some(RealityConfig {
                     public_key: pk.clone(),
-                    short_id: sid.clone(),
-                    sni: proxy.servername.clone(),
+                    short_id: reality.short_id.clone().unwrap_or_default(),
+                    sni: proxy.servername.clone().or_else(|| proxy.sni.clone()),
                 }),
             });
         }
@@ -217,7 +233,7 @@ fn build_transport(proxy: &ClashProxy) -> Option<TransportConfig> {
 
     let tls = if has_tls {
         Some(TlsConfig {
-            sni: proxy.servername.clone(),
+            sni: proxy.servername.clone().or_else(|| proxy.sni.clone()),
             skip_cert_verify: proxy.skip_cert_verify,
             alpn: proxy.alpn.clone(),
             fingerprint: proxy.client_fingerprint.clone(),
@@ -401,5 +417,46 @@ proxies:
         let nodes = parse_clash_config(yaml).unwrap();
         // snell is unsupported, should be skipped
         assert_eq!(nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_clash_meta_subscription() {
+        // Real-world Clash Meta subscription format with:
+        // - VLESS + Reality (no short-id) → should use Reality transport
+        // - SS + shadow-tls plugin → should be skipped (unsupported)
+        // - Hysteria2 with sni field → SNI should be picked up
+        let yaml = r#"
+port: 7890
+socks-port: 7891
+proxies:
+  - { name: "US-Xr1",type: vless,server: 45.43.31.142,port: 443,uuid: 1E4C7EB5-3BC1-E103-4213-1B40392BF22D,network: tcp,tls: true,udp: false,servername: azure.microsoft.com,reality-opts: {public-key: OIZG5tPDg7SHoOHjvZ-UpKnEPynbFmiNXnNMEDZfoWg},client-fingerprint: safari}
+  - { name: "US-SS-TLS",type: ss,server: us1.dav2v2v2.top,port: 443,password: "testpass",udp: false,cipher: 2022-blake3-aes-256-gcm,plugin: shadow-tls,plugin-opts: {host: apple.com,password: "10086",version: 3}}
+  - { name: "HK-Hy2-1",type: hysteria2,server: hk1.dav2v2.top,port: 443,password: 1E4C7EB5-3BC1-E103-4213-1B40392BF22D,up: "50 Mbps",down: "100 Mbps",skip-cert-verify: true,sni: errors.edgesuite.net}
+proxy-groups: []
+"#;
+        let nodes = parse_clash_config(yaml).unwrap();
+        assert_eq!(nodes.len(), 2, "SS+shadow-tls should be skipped, leaving 2 nodes");
+
+        // VLESS Reality: transport should be Reality, not plain TLS
+        let vless = &nodes[0];
+        assert_eq!(vless.name, "US-Xr1");
+        let transport = vless.transport.as_ref().unwrap();
+        assert!(
+            matches!(transport.transport_type, TransportType::Reality),
+            "VLESS Reality should have Reality transport, got {:?}",
+            transport.transport_type
+        );
+        let reality = transport.reality.as_ref().unwrap();
+        assert_eq!(reality.public_key, "OIZG5tPDg7SHoOHjvZ-UpKnEPynbFmiNXnNMEDZfoWg");
+        assert_eq!(reality.short_id, ""); // default empty when not specified
+        assert_eq!(reality.sni.as_deref(), Some("azure.microsoft.com"));
+
+        // Hysteria2: SNI should be picked up from `sni` field
+        let hy2 = &nodes[1];
+        assert_eq!(hy2.name, "HK-Hy2-1");
+        let transport = hy2.transport.as_ref().unwrap();
+        let tls = transport.tls.as_ref().unwrap();
+        assert_eq!(tls.sni.as_deref(), Some("errors.edgesuite.net"));
+        assert!(tls.skip_cert_verify);
     }
 }
