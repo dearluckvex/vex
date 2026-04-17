@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
+use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
@@ -52,6 +53,12 @@ impl Outbound for DirectOutbound {
                     })?
                     .with_context(|| format!("Direct connection to {} failed", addr))?;
             stream.set_nodelay(true).ok();
+            let sock = SockRef::from(&stream);
+            sock.set_send_buffer_size(256 * 1024).ok();
+            sock.set_recv_buffer_size(256 * 1024).ok();
+            let keepalive = TcpKeepalive::new()
+                .with_time(Duration::from_secs(30));
+            sock.set_tcp_keepalive(&keepalive).ok();
             Ok(Box::new(stream) as BoxProxyStream)
         })
     }

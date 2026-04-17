@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use socket2::SockRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -45,6 +46,9 @@ impl HttpProxyServer {
                 result = self.listener.accept() => {
                     let (stream, peer) = result?;
                     stream.set_nodelay(true).ok();
+                    let sock = SockRef::from(&stream);
+                    sock.set_send_buffer_size(256 * 1024).ok();
+                    sock.set_recv_buffer_size(256 * 1024).ok();
                     let outbound = self.outbound.clone();
                     let stats = self.stats.clone();
                     tokio::spawn(async move {

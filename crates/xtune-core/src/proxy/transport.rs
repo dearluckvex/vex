@@ -11,12 +11,17 @@ use craft_tls::rustls::{
 use craft_tls::TlsConnector;
 use craft_tls::client::TlsStream;
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
 
 use crate::config::model::TlsConfig;
 
 /// Default timeout for TCP connect + TLS handshake.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Socket send/receive buffer size (256KB — improves throughput on high-BDP links).
+const SOCKET_BUF_SIZE: usize = 256 * 1024;
+/// TCP keepalive interval (keeps connections alive through NATs/firewalls).
+const TCP_KEEPALIVE_SECS: u64 = 30;
 
 /// Globally cached root certificate store (built once, reused everywhere).
 static ROOT_CERT_STORE: OnceLock<craft_tls::rustls::RootCertStore> = OnceLock::new();
@@ -42,6 +47,34 @@ fn fingerprint_builder(
         // Default to Chrome 112 for any unrecognized fingerprint
         _ => CHROME_112.builder(),
     }
+}
+
+/// Apply performance-critical socket options to a connected TCP stream:
+/// TCP_NODELAY, enlarged send/receive buffers, and TCP keepalive.
+fn tune_socket(stream: &TcpStream) {
+    stream.set_nodelay(true).ok();
+    let sock = SockRef::from(stream);
+    sock.set_send_buffer_size(SOCKET_BUF_SIZE).ok();
+    sock.set_recv_buffer_size(SOCKET_BUF_SIZE).ok();
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(TCP_KEEPALIVE_SECS));
+    sock.set_tcp_keepalive(&keepalive).ok();
+}
+
+/// Resolve address string and connect TCP with a timeout, applying socket tuning.
+async fn connect_tcp(addr: &str, timeout: Duration) -> Result<TcpStream> {
+    let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "TCP connection to {} timed out after {}s",
+                addr,
+                timeout.as_secs()
+            )
+        })?
+        .with_context(|| format!("TCP connection to {} failed", addr))?;
+    tune_socket(&tcp);
+    Ok(tcp)
 }
 
 /// Build a reusable TLS connector from config. Call once per outbound
@@ -126,19 +159,7 @@ pub async fn connect_with_connector(
     timeout: Duration,
 ) -> Result<Box<dyn super::connector::ProxyStream>> {
     let addr = format!("{}:{}", server, port);
-
-    let tcp = tokio::time::timeout(timeout, TcpStream::connect(&addr))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "TCP connection to {} timed out after {}s",
-                addr,
-                timeout.as_secs()
-            )
-        })?
-        .with_context(|| format!("TCP connection to {} failed", addr))?;
-
-    tcp.set_nodelay(true).ok();
+    let tcp = connect_tcp(&addr, timeout).await?;
 
     if use_tls {
         let tls = tokio::time::timeout(timeout, connect_tls_with(tcp, sni, connector))
@@ -166,20 +187,7 @@ pub async fn connect_with_tls_timeout(
     timeout: Duration,
 ) -> Result<Box<dyn super::connector::ProxyStream>> {
     let addr = format!("{}:{}", server, port);
-
-    let tcp = tokio::time::timeout(timeout, TcpStream::connect(&addr))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "TCP connection to {} timed out after {}s",
-                addr,
-                timeout.as_secs()
-            )
-        })?
-        .with_context(|| format!("TCP connection to {} failed", addr))?;
-
-    // Disable Nagle's algorithm for lower latency
-    tcp.set_nodelay(true).ok();
+    let tcp = connect_tcp(&addr, timeout).await?;
 
     if use_tls {
         let sni = tls_config.and_then(|c| c.sni.as_deref()).unwrap_or(server);

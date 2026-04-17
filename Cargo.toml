@@ -69,6 +69,7 @@ urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 bytes = "1"
 rand = "0.9"
+socket2 = "0.5"
 
 [patch.crates-io]
 rustls = { path = "crates/craftls" }
