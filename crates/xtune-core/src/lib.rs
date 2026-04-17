@@ -20,6 +20,7 @@ pub use proxy::connector::{BoxProxyStream, DirectOutbound, Outbound, ProxyStream
 pub use proxy::factory::create_outbound;
 pub use proxy::http::HttpProxyServer;
 pub use proxy::hysteria2::Hysteria2Outbound;
+pub use proxy::relay::relay_bidirectional;
 pub use proxy::routing::RoutingOutbound;
 pub use proxy::service::ProxyService;
 pub use proxy::socks5::Socks5Server;

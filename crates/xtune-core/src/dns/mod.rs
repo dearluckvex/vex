@@ -75,6 +75,8 @@ struct CacheEntry {
 pub struct DnsResolver {
     config: DnsConfig,
     cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
+    /// Shared reqwest client for DoH queries (avoids per-query creation)
+    doh_client: reqwest::Client,
 }
 
 impl DnsResolver {
@@ -85,9 +87,15 @@ impl DnsResolver {
 
     /// Create a new resolver with custom config.
     pub fn with_config(config: DnsConfig) -> Self {
+        let doh_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(2)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             config,
             cache: Arc::new(RwLock::new(HashMap::new())),
+            doh_client,
         }
     }
 
@@ -210,7 +218,7 @@ impl DnsResolver {
         socket.send_to(&query, server).await?;
 
         let mut buf = vec![0u8; 512];
-        let timeout = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf));
+        let timeout = tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buf));
         let (n, _) = timeout
             .await
             .map_err(|_| anyhow::anyhow!("DNS query timeout"))??;
@@ -222,11 +230,8 @@ impl DnsResolver {
     async fn query_doh(&self, url: &str, domain: &str) -> Result<Vec<IpAddr>> {
         let query = build_dns_query(domain, 1);
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()?;
-
-        let resp = client
+        let resp = self
+            .doh_client
             .post(url)
             .header("Content-Type", "application/dns-message")
             .header("Accept", "application/dns-message")

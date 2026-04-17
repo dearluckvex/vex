@@ -38,10 +38,28 @@
    - 系统代理错误消息按实际错误内容提示
 
 ## 待优化（可选）
-- 手动添加/编辑节点表单（当前仅支持订阅导入）
+- ✅ 手动添加节点 — 支持粘贴 vless/vmess/ss/trojan/tuic/hy2 分享链接
 - ✅ 节点搜索/过滤 — 按名称、服务器地址、协议类型筛选
 - ✅ 删除所有节点 — 一键清空节点列表
-- 规则编辑功能（当前需删除后重新添加）
+- ✅ 规则编辑功能 — 点击编辑按钮即可修改现有规则
+
+## 性能优化 & 退出清理
+9. ✅ 高性能数据中继 — 64KB缓冲区替代tokio默认8KB
+   - 新增 `relay.rs` 模块，自定义双向中继，缓冲区从8KB提升到64KB（8倍）
+   - SOCKS5/HTTP/TUN 三种代理模式全部使用新中继
+   - 所有accept的TCP连接设置 `TCP_NODELAY`（之前仅出站连接设置）
+   - DNS查询超时从5s缩短到3s，加速故障转移
+   - DNS-over-HTTPS 复用 reqwest::Client（原来每次查询创建新Client）
+
+10. ✅ 应用退出自动清理网络 — 防止关闭后网络不可用
+    - `main.rs` 退出后自动调用 `clear_system_proxy()`
+    - 注册 Ctrl+C 信号处理器，中断时也清理系统代理
+    - 注册 panic hook，崩溃时也清理系统代理
+    - TUN 路由守卫 (TunRouteGuard) 的 Drop 已有恢复逻辑，无需额外处理
+
+## WinTUN驱动
+- ✅ 编译时嵌入 wintun.dll（amd64/arm64/x86），运行时自动释放到exe目录
+- 无需用户手动下载或配置
 
 ## 其他修复
 7. ✅ Windows系统代理bypass格式 — 使用分号分隔+<local>关键字
@@ -61,3 +79,17 @@
 6. ✅ SS + shadow-tls 插件处理
    - 订阅源 SS 节点使用 shadow-tls 插件包装（不支持）
    - 修复：解析 plugin 字段，跳过使用不支持插件的节点并记录日志
+
+## TLS连接失败 & 节点速度太慢修复
+8. ✅ TLS连接兼容性改进 — 多项修复
+   - **默认ALPN**：TLS ClientHello 始终发送 `["h2", "http/1.1"]` ALPN
+     浏览器每次TLS握手都带ALPN，缺少ALPN使连接极易被DPI/防火墙识别拦截
+   - **超时增加**：TCP+TLS连接超时从10s增至30s，QUIC(TUIC/Hy2)从15s增至30s
+     延迟测试超时同步增至30s，QUIC空闲超时从30s增至60s
+   - **Reality节点修复**：VLESS/VMess Reality transport 现在正确使用
+     Reality配置中的SNI + skip_cert_verify，而非留空TLS配置导致握手失败
+   - **crypto provider初始化**：transport.rs中确保rustls加密提供者已安装
+
+   注意：完整的TLS指纹伪装(uTLS)需要较大工程量，目前rustls生态暂无等价方案。
+   如果添加ALPN后仍有TLS失败，建议优先使用QUIC协议节点(TUIC/Hysteria2)，
+   因为QUIC不受TLS指纹检测影响。

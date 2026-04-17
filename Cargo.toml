@@ -37,7 +37,12 @@ quinn = "0.11"
 sysproxy = "0.3.0"
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
+craft-tls = { package = "tokio-rustls", version = "0.25" }
 webpki-roots = "0.26"
+rustls-pki-types = "1"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+http = "1"
 
 # TUN proxy
 tun = { version = "0.8", features = ["async"] }
@@ -64,3 +69,6 @@ urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 bytes = "1"
 rand = "0.9"
+
+[patch.crates-io]
+rustls = { path = "crates/craftls" }

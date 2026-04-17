@@ -13,9 +13,9 @@ use xtune_core::proxy::ProxyStats;
 use xtune_core::{
     ProxyMode, ProxyService, Router, RoutingOutbound, RuleSet, SharedOutbound, TunProxy,
     china_direct_ruleset, clear_system_proxy as clear_os_proxy, create_outbound,
-    fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names, resolve_to_ipv4,
-    set_system_proxy as set_os_proxy, setup_tun_routes, system_proxy_supported, tun_requirements,
-    tun_supported,
+    fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names,
+    parse_proxy_uri, resolve_to_ipv4, set_system_proxy as set_os_proxy, setup_tun_routes,
+    system_proxy_supported, tun_requirements, tun_supported,
 };
 
 // Color palette
@@ -92,6 +92,12 @@ pub struct AppState {
     // Node search filter
     node_filter: String,
     node_filter_input: Entity<InputState>,
+
+    // Manual node URI input
+    node_uri_input: Entity<InputState>,
+
+    // Rule editing
+    editing_rule_index: Option<usize>,
 
     // Log viewer
     log_buffer: SharedLogBuffer,
@@ -196,6 +202,10 @@ impl AppState {
         let rule_target_input = cx.new(|cx| InputState::new(window, cx).placeholder("proxy"));
         let node_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search nodes..."));
+        let node_uri_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("vless://... or vmess://... or ss://... or trojan://...")
+        });
 
         Self {
             active_view: ActiveView::Home,
@@ -236,6 +246,8 @@ impl AppState {
             rule_target_input,
             node_filter: String::new(),
             node_filter_input,
+            node_uri_input,
+            editing_rule_index: None,
             log_buffer,
         }
     }
@@ -399,7 +411,7 @@ impl AppState {
                         verify_local_http_proxy(
                             &addr_for_check,
                             http_port,
-                            std::time::Duration::from_secs(30),
+                            std::time::Duration::from_secs(15),
                         )
                         .await
                     })
@@ -627,7 +639,7 @@ impl AppState {
                     // Gives realistic "warm" latency (100-500ms), not raw TCP (1ms).
                     let outbound = xtune_core::create_outbound(&node)
                         .map_err(|e| format!("{:#}", e))?;
-                    xtune_core::http_latency_test(&outbound, 15)
+                    xtune_core::http_latency_test(&outbound, 30)
                         .await
                         .map_err(|e| format!("{:#}", e))
                 })
@@ -811,7 +823,7 @@ impl AppState {
             // Step 1: ensure wintun.dll (Windows only, no-op elsewhere)
             if !xtune_core::wintun_dll_available() {
                 weak.update(cx, |this: &mut AppState, cx| {
-                    this.tun_status = "Downloading WinTun driver...".to_string();
+                    this.tun_status = "Extracting WinTun driver...".to_string();
                     cx.notify();
                 }).ok();
 
@@ -960,6 +972,47 @@ impl AppState {
         self.selected_node = None;
         self.active_proxy_node = None;
         self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn add_node_from_uri(&mut self, cx: &mut Context<Self>) {
+        let uri = self.node_uri_input.read(cx).value().trim().to_string();
+        if uri.is_empty() {
+            self.import_status = "⚠ Please paste a proxy share link".to_string();
+            cx.notify();
+            return;
+        }
+
+        // Support pasting multiple URIs separated by newlines
+        let uris: Vec<&str> = uri.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        let mut added = 0u32;
+        let mut errors = Vec::new();
+        for u in &uris {
+            match parse_proxy_uri(u) {
+                Ok(mut node) => {
+                    let normalized = xtune_core::config::model::decode_display_name(&node.name);
+                    node.name = normalized;
+                    self.nodes.push(node);
+                    added += 1;
+                }
+                Err(e) => {
+                    let short = if u.len() > 30 { &u[..30] } else { u };
+                    errors.push(format!("{}: {:#}", short, e));
+                }
+            }
+        }
+
+        self.import_status = if errors.is_empty() {
+            format!("✓ Added {} node(s) from URI", added)
+        } else if added > 0 {
+            format!("✓ Added {} node(s), {} failed: {}", added, errors.len(), errors[0])
+        } else {
+            format!("✗ Failed: {}", errors[0])
+        };
+
+        if added > 0 {
+            self.persist_gui_state();
+        }
         cx.notify();
     }
 
@@ -1907,6 +1960,7 @@ impl AppState {
         }
 
         let import_url_input = self.import_url_input.clone();
+        let node_uri_input = self.node_uri_input.clone();
 
         div()
             .flex()
@@ -1975,6 +2029,47 @@ impl AppState {
                             } else {
                                 div().into_any_element()
                             }),
+                    ),
+            )
+            // Add node by URI card
+            .child(
+                self.card()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .mb_3()
+                            .child("Add Node by Share Link"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                gpui_component::input::Input::new(&node_uri_input)
+                                    .cleanable(true),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("add-uri-btn")
+                                            .label("+ Add Node".to_string())
+                                            .primary()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.add_node_from_uri(cx);
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(TEXT_MUTED))
+                                            .child("Supports vless://, vmess://, ss://, trojan://, tuic://, hy2://"),
+                                    ),
+                            ),
                     ),
             )
             // Node summary card
@@ -2070,20 +2165,59 @@ impl AppState {
             return;
         }
 
-        self.rules.push(RoutingRule {
+        let new_rule = RoutingRule {
             rule_type: rule_type.trim().to_string(),
             pattern: pattern.trim().to_string(),
             target: target.trim().to_string(),
-        });
-        self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
-            "✓ Rule added. Restarting Rule mode to apply changes.".to_string()
+        };
+
+        let action_msg = if let Some(edit_idx) = self.editing_rule_index.take() {
+            if edit_idx < self.rules.len() {
+                self.rules[edit_idx] = new_rule;
+                "✓ Rule updated"
+            } else {
+                self.rules.push(new_rule);
+                "✓ Rule added"
+            }
         } else {
-            "✓ Rule added".to_string()
+            self.rules.push(new_rule);
+            "✓ Rule added"
+        };
+
+        self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
+            format!("{}. Restarting Rule mode to apply changes.", action_msg)
+        } else {
+            action_msg.to_string()
         };
         self.persist_gui_state();
         if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
             self.restart_proxy_with_current_state(cx);
         }
+        cx.notify();
+    }
+
+    fn start_edit_rule(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.rules.len() {
+            return;
+        }
+        let rule = self.rules[index].clone();
+        self.rule_type_input.update(cx, |state, cx| {
+            state.set_value(rule.rule_type, window, cx);
+        });
+        self.rule_pattern_input.update(cx, |state, cx| {
+            state.set_value(rule.pattern, window, cx);
+        });
+        self.rule_target_input.update(cx, |state, cx| {
+            state.set_value(rule.target, window, cx);
+        });
+        self.editing_rule_index = Some(index);
+        self.rules_status = format!("Editing rule #{}", index + 1);
+        cx.notify();
+    }
+
+    fn cancel_edit_rule(&mut self, cx: &mut Context<Self>) {
+        self.editing_rule_index = None;
+        self.rules_status = String::new();
         cx.notify();
     }
 
@@ -2283,7 +2417,7 @@ impl AppState {
                             ),
                     ),
             )
-            // Add rule card
+            // Add/Edit rule card
             .child(
                 self.card()
                     .child(
@@ -2291,7 +2425,11 @@ impl AppState {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .mb_3()
-                            .child("Add Rule"),
+                            .child(if self.editing_rule_index.is_some() {
+                                "Edit Rule".to_string()
+                            } else {
+                                "Add Rule".to_string()
+                            }),
                     )
                     .child(
                         div()
@@ -2338,12 +2476,28 @@ impl AppState {
                                     .gap_2()
                                     .child(
                                         Button::new("add-rule-btn")
-                                            .label("+ Add Rule".to_string())
+                                            .label(if self.editing_rule_index.is_some() {
+                                                "💾 Save Rule".to_string()
+                                            } else {
+                                                "+ Add Rule".to_string()
+                                            })
                                             .primary()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.add_rule(cx);
                                             })),
-                                    ),
+                                    )
+                                    .children(if self.editing_rule_index.is_some() {
+                                        Some(
+                                            Button::new("cancel-edit-btn")
+                                                .label("Cancel".to_string())
+                                                .ghost()
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cancel_edit_rule(cx);
+                                                })),
+                                        )
+                                    } else {
+                                        None
+                                    }),
                             )
                             .child(
                                 div()
@@ -2495,6 +2649,14 @@ impl AppState {
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.move_rule_down(index, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("rule-edit", index))
+                            .label("✎".to_string())
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_edit_rule(index, window, cx);
                             })),
                     )
                     .child(

@@ -33,7 +33,27 @@ impl VlessOutbound {
                     t.transport_type,
                     TransportType::Tls | TransportType::Reality
                 );
-                (t.tls.clone(), needs_tls)
+                // For Reality transport, build a TLS config from the Reality settings
+                // since the normal `tls` field is typically None.
+                let tls = if t.transport_type == TransportType::Reality && t.tls.is_none() {
+                    if let Some(ref reality) = t.reality {
+                        tracing::info!(
+                            "VLESS Reality: using SNI '{}' with skip_cert_verify (no uTLS fingerprinting)",
+                            reality.sni.as_deref().unwrap_or(server)
+                        );
+                        Some(crate::config::model::TlsConfig {
+                            sni: reality.sni.clone(),
+                            skip_cert_verify: true,
+                            alpn: Some(vec!["h2".to_string(), "http/1.1".to_string()]),
+                            fingerprint: None,
+                        })
+                    } else {
+                        t.tls.clone()
+                    }
+                } else {
+                    t.tls.clone()
+                };
+                (tls, needs_tls)
             }
             None => (None, false),
         };

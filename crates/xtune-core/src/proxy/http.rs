@@ -5,6 +5,7 @@ use tokio::sync::watch;
 
 use super::ProxyStats;
 use super::connector::SharedOutbound;
+use super::relay::relay_bidirectional;
 
 /// HTTP proxy server supporting CONNECT tunnels and plain HTTP forwarding.
 pub struct HttpProxyServer {
@@ -43,6 +44,7 @@ impl HttpProxyServer {
                 }
                 result = self.listener.accept() => {
                     let (stream, peer) = result?;
+                    stream.set_nodelay(true).ok();
                     let outbound = self.outbound.clone();
                     let stats = self.stats.clone();
                     tokio::spawn(async move {
@@ -150,7 +152,7 @@ async fn handle_http(mut stream: TcpStream, outbound: SharedOutbound) -> Result<
                 if !remaining.is_empty() {
                     remote.write_all(&remaining).await?;
                 }
-                let (up, down) = tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
+                let (up, down) = relay_bidirectional(&mut stream, &mut remote).await?;
                 tracing::debug!(
                     "HTTP CONNECT {}:{} done: up={} down={}",
                     host,
@@ -246,7 +248,7 @@ async fn handle_plain_http(
     }
 
     // Relay bidirectionally (handles response + any further request body)
-    let _ = tokio::io::copy_bidirectional(client, &mut remote).await;
+    let _ = relay_bidirectional(client, &mut remote).await;
 
     Ok(())
 }

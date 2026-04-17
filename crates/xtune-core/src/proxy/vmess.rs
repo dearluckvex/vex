@@ -78,7 +78,21 @@ impl VMessOutbound {
                     t.transport_type,
                     TransportType::Tls | TransportType::Reality
                 );
-                (t.tls.clone(), needs_tls)
+                let tls = if t.transport_type == TransportType::Reality && t.tls.is_none() {
+                    if let Some(ref reality) = t.reality {
+                        Some(crate::config::model::TlsConfig {
+                            sni: reality.sni.clone(),
+                            skip_cert_verify: true,
+                            alpn: Some(vec!["h2".to_string(), "http/1.1".to_string()]),
+                            fingerprint: None,
+                        })
+                    } else {
+                        t.tls.clone()
+                    }
+                } else {
+                    t.tls.clone()
+                };
+                (tls, needs_tls)
             }
             None => (None, false),
         };

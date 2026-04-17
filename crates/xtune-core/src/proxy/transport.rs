@@ -2,19 +2,38 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
+use craft_tls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use craft_tls::rustls::{
+    ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme,
+};
+use craft_tls::TlsConnector;
+use craft_tls::client::TlsStream;
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio::net::TcpStream;
-use tokio_rustls::TlsConnector;
-use tokio_rustls::client::TlsStream;
 
 use crate::config::model::TlsConfig;
 
 /// Default timeout for TCP connect + TLS handshake.
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Connect to a remote server with TLS.
+/// Map a fingerprint name from config to a craftls FingerprintBuilder.
+fn fingerprint_builder(
+    name: Option<&str>,
+) -> craft_tls::rustls::craft::FingerprintBuilder {
+    use craft_tls::rustls::craft::*;
+    match name.map(|s| s.to_lowercase()).as_deref() {
+        Some("chrome") | None => CHROME_112.builder(),
+        Some("safari") => SAFARI_17_1.builder(),
+        Some("firefox") => FIREFOX_105.builder(),
+        Some("chrome108") => CHROME_108.builder(),
+        // Default to Chrome 112 for any unrecognized fingerprint
+        _ => CHROME_112.builder(),
+    }
+}
+
+/// Connect to a remote server with TLS using browser fingerprint emulation.
 pub async fn connect_tls(
     tcp: TcpStream,
     sni: &str,
@@ -22,11 +41,12 @@ pub async fn connect_tls(
 ) -> Result<TlsStream<TcpStream>> {
     let skip_verify = config.map(|c| c.skip_cert_verify).unwrap_or(false);
     let alpn = config.and_then(|c| c.alpn.as_ref());
+    let fp_name = config.and_then(|c| c.fingerprint.as_deref());
 
-    let mut root_store = rustls::RootCertStore::empty();
+    let mut root_store = craft_tls::rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-    let mut tls_config = if skip_verify {
+    let base_config = if skip_verify {
         ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
@@ -37,6 +57,17 @@ pub async fn connect_tls(
             .with_no_client_auth()
     };
 
+    // Apply browser TLS fingerprint emulation.
+    // If user specifies custom ALPN, tell craftls not to override it.
+    let fp = if alpn.is_some() {
+        fingerprint_builder(fp_name).do_not_override_alpn()
+    } else {
+        fingerprint_builder(fp_name)
+    };
+    let mut tls_config = base_config.with_fingerprint(fp);
+
+    // Set ALPN from config if specified (craftls won't override when do_not_override_alpn).
+    // Otherwise craftls already set browser-appropriate ALPN via the fingerprint.
     if let Some(alpn) = alpn {
         tls_config.alpn_protocols = alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
     }
@@ -53,7 +84,7 @@ pub async fn connect_tls(
 /// Connect to a remote server over TCP, optionally wrapping with TLS.
 /// Returns a boxed ProxyStream.
 ///
-/// Applies a connection timeout (default 10s) to both the TCP connect
+/// Applies a connection timeout (default 15s) to both the TCP connect
 /// and the TLS handshake to prevent indefinite hangs.
 pub async fn connect_with_tls(
     server: &str,

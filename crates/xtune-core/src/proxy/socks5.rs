@@ -5,6 +5,7 @@ use tokio::sync::watch;
 
 use super::ProxyStats;
 use super::connector::SharedOutbound;
+use super::relay::relay_bidirectional;
 
 /// SOCKS5 proxy server.
 pub struct Socks5Server {
@@ -43,6 +44,7 @@ impl Socks5Server {
                 }
                 result = self.listener.accept() => {
                     let (stream, peer) = result?;
+                    stream.set_nodelay(true).ok();
                     let outbound = self.outbound.clone();
                     let stats = self.stats.clone();
                     tokio::spawn(async move {
@@ -130,7 +132,7 @@ async fn handle_socks5(mut stream: TcpStream, outbound: SharedOutbound) -> Resul
                 Ok(mut remote) => {
                     stream.write_all(&socks5_reply(0x00)).await?; // success
                     let (up, down) =
-                        tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
+                        relay_bidirectional(&mut stream, &mut remote).await?;
                     tracing::debug!(
                         "SOCKS5 relay {}:{} done: up={} down={}",
                         host,

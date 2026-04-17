@@ -8,6 +8,18 @@ use gpui_component::*;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// Best-effort cleanup: clear system proxy so the OS doesn't keep routing
+/// traffic to a dead local proxy after the app exits.
+fn cleanup_on_exit() {
+    if let Err(e) = xtune_core::clear_system_proxy() {
+        // Only log if it was a real error (not "unsupported platform")
+        let msg = format!("{}", e);
+        if !msg.contains("not supported") {
+            eprintln!("cleanup: failed to clear system proxy: {}", e);
+        }
+    }
+}
+
 fn main() {
     // Set up tracing with both stdout and in-memory capture
     let log_buf = log_buffer::new_log_buffer();
@@ -18,6 +30,13 @@ fn main() {
         .with(capture_layer)
         .init();
 
+    // Register panic hook to clear system proxy even on panic
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        cleanup_on_exit();
+        default_panic(info);
+    }));
+
     // Create tokio runtime for async proxy/network operations
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -25,6 +44,17 @@ fn main() {
         .build()
         .expect("Failed to create tokio runtime");
     let tokio_handle = rt.handle().clone();
+
+    // Register Ctrl+C handler to clean up system proxy
+    let ctrlc_handle = tokio_handle.clone();
+    std::thread::spawn(move || {
+        ctrlc_handle.block_on(async {
+            if let Ok(()) = tokio::signal::ctrl_c().await {
+                cleanup_on_exit();
+                std::process::exit(0);
+            }
+        });
+    });
 
     let app = Application::new();
 
@@ -50,4 +80,7 @@ fn main() {
         })
         .detach();
     });
+
+    // App exited — always clean up system proxy
+    cleanup_on_exit();
 }

@@ -1,11 +1,12 @@
 //! Hysteria2 protocol client implementation.
 //!
-//! Hysteria2 is a QUIC-based proxy protocol that uses HTTP/3-like semantics.
-//! It tunnels TCP connections over QUIC streams with password authentication.
+//! Hysteria2 is a QUIC-based proxy protocol that uses HTTP/3 for authentication
+//! and raw QUIC streams for TCP proxying. It tunnels TCP connections over QUIC
+//! with HTTP/3-style masquerading.
 
 use std::future::Future;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Once;
@@ -20,7 +21,8 @@ use super::connector::{BoxProxyStream, Outbound};
 
 /// Hysteria2 outbound connector.
 ///
-/// Uses QUIC (quinn) for transport with HTTP/3-style CONNECT requests.
+/// Uses QUIC (quinn) for transport with HTTP/3 authentication and
+/// raw bidirectional streams for TCP proxy requests.
 pub struct Hysteria2Outbound {
     server: String,
     port: u16,
@@ -73,8 +75,8 @@ impl Hysteria2Outbound {
         let (endpoint, conn) = self.create_connection().await?;
         *guard = Some((endpoint, conn.clone()));
 
-        // Authenticate via a unidirectional stream
-        self.authenticate(&conn).await?;
+        // Authenticate via HTTP/3
+        self.authenticate_h3(&conn).await?;
 
         Ok(conn)
     }
@@ -156,26 +158,41 @@ impl Hysteria2Outbound {
         Ok((endpoint, connection))
     }
 
-    /// Send Hysteria2 authentication request.
+    /// Authenticate via HTTP/3 POST /auth request.
     ///
-    /// Hysteria2 auth is sent as an HTTP/3-style request on a unidirectional stream:
-    /// The server validates the password and allows subsequent CONNECT requests.
-    async fn authenticate(&self, conn: &quinn::Connection) -> Result<()> {
-        let mut send = conn.open_uni().await?;
+    /// Per the Hysteria2 spec, the client sends an HTTP/3 request:
+    ///   POST /auth with Hysteria-Auth header containing the password.
+    /// The server responds with status 233 if authentication succeeds.
+    async fn authenticate_h3(&self, conn: &quinn::Connection) -> Result<()> {
+        let h3_conn = h3_quinn::Connection::new(conn.clone());
+        let (_conn, mut sender) = h3::client::new(h3_conn).await?;
 
-        // Hysteria2 auth frame: HTTP/3-like header with auth token
-        // Format: varint frame_type(0x401) + varint length + auth_data
-        // The auth_data is the password string
-        let auth_data = self.password.as_bytes();
+        // Build the auth request
+        let req = http::Request::builder()
+            .method("POST")
+            .uri("https://hysteria/auth")
+            .header("Hysteria-Auth", &self.password)
+            .header("Hysteria-CC-RX", "0")
+            .body(())
+            .map_err(|e| anyhow::anyhow!("Failed to build auth request: {}", e))?;
 
-        // Write Hysteria2 client auth frame
-        write_varint(&mut send, 0x0401).await?; // Hysteria2 auth frame type
-        write_varint(&mut send, auth_data.len() as u64).await?;
-        send.write_all(auth_data).await?;
-        send.flush().await?;
-        send.finish()?;
+        let mut stream = sender.send_request(req).await?;
+        stream.finish().await?;
 
-        tracing::info!("Hysteria2 authentication sent");
+        let resp = stream.recv_response().await?;
+
+        if resp.status() != 233 {
+            bail!(
+                "Hysteria2 auth failed: server returned status {} (expected 233)",
+                resp.status()
+            );
+        }
+
+        tracing::info!("Hysteria2 authentication successful (HTTP/3 status 233)");
+
+        // Drop the h3 client — we now use raw QUIC streams for proxy requests
+        drop(sender);
+
         Ok(())
     }
 }
@@ -198,39 +215,41 @@ impl Outbound for Hysteria2Outbound {
             let conn = self.get_connection().await?;
 
             // Open bidirectional stream for this TCP connection
-            let (mut send, recv) = conn.open_bi().await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
 
-            // Hysteria2 TCP request header:
-            // varint request_id(0x0401) + address_type + address + port
+            // Hysteria2 TCP request (per protocol spec):
+            //   varint 0x401 (TCPRequest ID)
+            //   varint address_length
+            //   bytes  address string ("host:port")
+            //   varint padding_length (0)
+            //   bytes  padding (empty)
+            let addr_str = format!("{}:{}", host, port);
+            let addr_bytes = addr_str.as_bytes();
+
             write_varint(&mut send, 0x0401).await?;
-
-            // Write address
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                match ip {
-                    IpAddr::V4(v4) => {
-                        send.write_all(&[0x01]).await?; // IPv4
-                        send.write_all(&v4.octets()).await?;
-                    }
-                    IpAddr::V6(v6) => {
-                        send.write_all(&[0x03]).await?; // IPv6
-                        send.write_all(&v6.octets()).await?;
-                    }
-                }
-            } else {
-                let domain = host.as_bytes();
-                if domain.len() > 255 {
-                    bail!("Domain name too long: {}", host);
-                }
-                send.write_all(&[0x00]).await?; // Domain
-                write_varint(&mut send, domain.len() as u64).await?;
-                send.write_all(domain).await?;
-            }
-            send.write_all(&port.to_be_bytes()).await?;
-            // Padding (0 bytes)
-            write_varint(&mut send, 0).await?;
+            write_varint(&mut send, addr_bytes.len() as u64).await?;
+            send.write_all(addr_bytes).await?;
+            write_varint(&mut send, 0).await?; // no padding
             send.flush().await?;
 
-            tracing::debug!("Hysteria2 connect to {}:{}", host, port);
+            // Read the server's TCPResponse:
+            //   uint8  status (0x00 = OK, 0x01 = Error)
+            //   varint message_length
+            //   bytes  message string
+            //   varint padding_length
+            //   bytes  padding
+            let mut status_buf = [0u8; 1];
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv.read_exact(&mut status_buf),
+            )
+            .await;
+
+            if status_buf[0] == 0x01 {
+                bail!("Hysteria2 TCP connect to {} rejected by server", addr_str);
+            }
+
+            tracing::debug!("Hysteria2 TCP connect to {}", addr_str);
 
             let stream = Hy2BidiStream { send, recv };
             Ok(Box::new(stream) as BoxProxyStream)

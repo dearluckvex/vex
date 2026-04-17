@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use tun::AbstractDevice;
 
 use super::connector::SharedOutbound;
+use super::relay::relay_bidirectional;
 use crate::dns::DnsResolver;
 
 /// TUN device IP configuration.
@@ -168,7 +169,7 @@ async fn handle_tun_stream(
 
             match outbound.connect(&host, port).await {
                 Ok(mut remote) => {
-                    let result = tokio::io::copy_bidirectional(&mut tcp, &mut remote).await;
+                    let result = relay_bidirectional(&mut tcp, &mut remote).await;
                     let _ = remote.shutdown().await;
                     let _ = tcp.shutdown().await;
                     if let Err(e) = result {
@@ -195,7 +196,7 @@ async fn handle_tun_stream(
 
             match outbound.connect(&host, port).await {
                 Ok(mut remote) => {
-                    let result = tokio::io::copy_bidirectional(&mut udp, &mut remote).await;
+                    let result = relay_bidirectional(&mut udp, &mut remote).await;
                     let _ = remote.shutdown().await;
                     let _ = udp.shutdown().await;
                     if let Err(e) = result {
@@ -244,7 +245,7 @@ where
 
     match crate::dns::parse_dns_query(query) {
         Ok((domain, qtype)) => {
-            tracing::debug!("TUN DNS: {} (type {})", domain, qtype);
+            tracing::trace!("TUN DNS: {} (type {})", domain, qtype);
 
             let timeout = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -284,7 +285,7 @@ where
             }
         }
         Err(e) => {
-            tracing::debug!("TUN DNS parse error: {}", e);
+            tracing::trace!("TUN DNS parse error: {}", e);
             let err_resp = crate::dns::build_dns_error_response(query, 1);
             let _ = udp.write_all(&err_resp).await;
         }
@@ -322,6 +323,16 @@ fn default_tun_name() -> &'static str {
 
 // ─── Cross-platform route setup ───
 
+/// DNS server IPs that must bypass TUN to avoid a DNS resolution loop.
+/// When TUN intercepts port-53 UDP and resolves via these servers,
+/// the outbound DNS packets must NOT re-enter the TUN device.
+const DNS_BYPASS_IPS: &[Ipv4Addr] = &[
+    Ipv4Addr::new(8, 8, 8, 8),
+    Ipv4Addr::new(1, 1, 1, 1),
+    Ipv4Addr::new(223, 5, 5, 5),
+    Ipv4Addr::new(119, 29, 29, 29),
+];
+
 /// Set up system routes to direct all traffic through the TUN device.
 ///
 /// Returns a [`TunRouteGuard`] that restores routes on drop.
@@ -329,6 +340,14 @@ pub fn setup_tun_routes(
     route_info: &TunRouteInfo,
     proxy_server_ips: &[Ipv4Addr],
 ) -> Result<TunRouteGuard> {
+    // Combine proxy server IPs and DNS server IPs for loop avoidance.
+    let mut bypass_ips: Vec<Ipv4Addr> = proxy_server_ips.to_vec();
+    for &ip in DNS_BYPASS_IPS {
+        if !bypass_ips.contains(&ip) {
+            bypass_ips.push(ip);
+        }
+    }
+
     let (orig_gateway, orig_iface) =
         get_default_gateway().context("Failed to get default gateway")?;
 
@@ -339,20 +358,20 @@ pub fn setup_tun_routes(
     );
 
     #[cfg(target_os = "linux")]
-    setup_routes_linux(route_info, proxy_server_ips, &orig_gateway, &orig_iface)?;
+    setup_routes_linux(route_info, &bypass_ips, &orig_gateway, &orig_iface)?;
 
     #[cfg(target_os = "macos")]
-    setup_routes_macos(route_info, proxy_server_ips, &orig_gateway, &orig_iface)?;
+    setup_routes_macos(route_info, &bypass_ips, &orig_gateway, &orig_iface)?;
 
     #[cfg(target_os = "windows")]
-    setup_routes_windows(route_info, proxy_server_ips, &orig_gateway, &orig_iface)?;
+    setup_routes_windows(route_info, &bypass_ips, &orig_gateway, &orig_iface)?;
 
     tracing::info!("Default route set to TUN device {}", route_info.tun_name);
 
     Ok(TunRouteGuard {
         orig_gateway,
         orig_iface,
-        proxy_server_ips: proxy_server_ips.to_vec(),
+        bypass_ips,
         restored: AtomicBool::new(false),
     })
 }
@@ -361,7 +380,7 @@ pub fn setup_tun_routes(
 pub struct TunRouteGuard {
     orig_gateway: Ipv4Addr,
     orig_iface: String,
-    proxy_server_ips: Vec<Ipv4Addr>,
+    bypass_ips: Vec<Ipv4Addr>,
     restored: AtomicBool,
 }
 
@@ -488,7 +507,7 @@ impl TunRouteGuard {
                 &self.orig_iface,
             ],
         );
-        for ip in &self.proxy_server_ips {
+        for ip in &self.bypass_ips {
             let ip_route = format!("{}/32", ip);
             let _ = run_cmd("ip", &["route", "del", &ip_route]);
         }
@@ -541,7 +560,7 @@ impl TunRouteGuard {
             let _ = run_cmd("route", &["-n", "delete", "default"]);
             let _ = run_cmd("route", &["-n", "add", "default", &gw_str]);
         }
-        for ip in &self.proxy_server_ips {
+        for ip in &self.bypass_ips {
             let _ = run_cmd("route", &["-n", "delete", "-host", &ip.to_string()]);
         }
     }
@@ -625,7 +644,7 @@ impl TunRouteGuard {
                 &["add", "0.0.0.0", "mask", "0.0.0.0", &gw_str, "metric", "5"],
             );
         }
-        for ip in &self.proxy_server_ips {
+        for ip in &self.bypass_ips {
             let _ = run_cmd("route", &["delete", &ip.to_string()]);
         }
     }
@@ -1072,7 +1091,17 @@ fn windows_is_elevated() -> Option<bool> {
 // === WinTun DLL auto-install (Windows only) ===
 
 const WINTUN_DLL: &str = "wintun.dll";
-const WINTUN_ZIP_URL: &str = "https://www.wintun.net/builds/wintun-0.14.1.zip";
+
+// Embed the architecture-specific wintun.dll at compile time.
+// The DLL files are from https://www.wintun.net/builds/wintun-0.14.1.zip
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const WINTUN_DLL_BYTES: &[u8] = include_bytes!("../../resources/wintun/wintun_amd64.dll");
+
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const WINTUN_DLL_BYTES: &[u8] = include_bytes!("../../resources/wintun/wintun_arm64.dll");
+
+#[cfg(all(target_os = "windows", target_arch = "x86"))]
+const WINTUN_DLL_BYTES: &[u8] = include_bytes!("../../resources/wintun/wintun_x86.dll");
 
 /// Check if wintun.dll is available (exists next to the executable or in PATH).
 pub fn wintun_dll_available() -> bool {
@@ -1093,8 +1122,7 @@ fn wintun_dll_path() -> Option<std::path::PathBuf> {
         .and_then(|exe| exe.parent().map(|p| p.join(WINTUN_DLL)))
 }
 
-/// Ensure wintun.dll is available. Downloads and extracts if missing.
-/// This is an async function that downloads from the official wintun website.
+/// Ensure wintun.dll is available. Extracts the embedded DLL if missing.
 #[cfg(target_os = "windows")]
 pub async fn ensure_wintun_dll() -> Result<std::path::PathBuf> {
     let dll_path = wintun_dll_path()
@@ -1105,89 +1133,15 @@ pub async fn ensure_wintun_dll() -> Result<std::path::PathBuf> {
         return Ok(dll_path);
     }
 
-    tracing::info!("wintun.dll not found, downloading from {}", WINTUN_ZIP_URL);
-
-    let response = reqwest::get(WINTUN_ZIP_URL)
-        .await
-        .context("failed to download wintun.dll from wintun.net")?;
-
-    if !response.status().is_success() {
-        bail!(
-            "wintun download failed with HTTP status {}",
-            response.status()
-        );
-    }
-
-    let zip_bytes = response
-        .bytes()
-        .await
-        .context("failed to read wintun download response")?;
-
-    tracing::info!("Downloaded wintun.zip ({} bytes), extracting...", zip_bytes.len());
-
-    // Save zip to temp and extract via PowerShell
-    let temp_dir = std::env::temp_dir();
-    let zip_path = temp_dir.join("wintun_xtune.zip");
-    let extract_dir = temp_dir.join("wintun_xtune_extract");
-
-    std::fs::write(&zip_path, &zip_bytes)
-        .context("failed to write wintun.zip to temp directory")?;
-
-    // Clean up old extract directory
-    let _ = std::fs::remove_dir_all(&extract_dir);
-
-    // Use PowerShell to extract (available on all modern Windows)
-    let ps_script = format!(
-        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-        zip_path.display(),
-        extract_dir.display()
+    tracing::info!(
+        "wintun.dll not found, extracting embedded DLL ({} bytes) to {}",
+        WINTUN_DLL_BYTES.len(),
+        dll_path.display()
     );
 
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
-        .output()
-        .context("failed to run PowerShell for ZIP extraction")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("PowerShell Expand-Archive failed: {}", stderr.trim());
-    }
-
-    // Determine architecture
-    let arch = if cfg!(target_arch = "x86_64") {
-        "amd64"
-    } else if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else if cfg!(target_arch = "x86") {
-        "x86"
-    } else {
-        "amd64" // default
-    };
-
-    let extracted_dll = extract_dir
-        .join("wintun")
-        .join("bin")
-        .join(arch)
-        .join(WINTUN_DLL);
-
-    if !extracted_dll.exists() {
-        bail!(
-            "wintun.dll not found in extracted archive at expected path: {}",
-            extracted_dll.display()
-        );
-    }
-
-    std::fs::copy(&extracted_dll, &dll_path).with_context(|| {
-        format!(
-            "failed to copy wintun.dll from {} to {}",
-            extracted_dll.display(),
-            dll_path.display()
-        )
+    std::fs::write(&dll_path, WINTUN_DLL_BYTES).with_context(|| {
+        format!("failed to write wintun.dll to {}", dll_path.display())
     })?;
-
-    // Cleanup temp files
-    let _ = std::fs::remove_file(&zip_path);
-    let _ = std::fs::remove_dir_all(&extract_dir);
 
     tracing::info!("wintun.dll installed at {}", dll_path.display());
     Ok(dll_path)
