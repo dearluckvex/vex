@@ -28,8 +28,8 @@ pub struct Hysteria2Outbound {
     port: u16,
     password: String,
     sni: String,
-    skip_cert_verify: bool,
-    alpn: Vec<String>,
+    /// Pre-built QUIC client config (avoids rebuilding root certs per reconnect)
+    quic_client_config: quinn::ClientConfig,
     state: tokio::sync::Mutex<Option<(quinn::Endpoint, quinn::Connection)>>,
 }
 
@@ -50,13 +50,16 @@ impl Hysteria2Outbound {
             .cloned()
             .unwrap_or_else(|| vec!["h3".to_string()]);
 
+        // Build QUIC TLS config once
+        ensure_crypto_provider();
+        let quic_client_config = build_quic_client_config(skip_cert_verify, &alpn)?;
+
         Ok(Self {
             server: server.to_string(),
             port,
             password: password.to_string(),
             sni,
-            skip_cert_verify,
-            alpn,
+            quic_client_config,
             state: tokio::sync::Mutex::new(None),
         })
     }
@@ -82,32 +85,7 @@ impl Hysteria2Outbound {
     }
 
     async fn create_connection(&self) -> Result<(quinn::Endpoint, quinn::Connection)> {
-        ensure_crypto_provider();
-
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        let rustls_config = if self.skip_cert_verify {
-            rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(InsecureHy2Verifier))
-                .with_no_client_auth()
-        } else {
-            rustls::ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth()
-        };
-
-        let mut rustls_config = rustls_config;
-        if !self.alpn.is_empty() {
-            rustls_config.alpn_protocols =
-                self.alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
-        }
-
-        let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
-            .map_err(|e| anyhow::anyhow!("Hysteria2 QUIC TLS config error: {}", e))?;
-
-        let mut client_config = quinn::ClientConfig::new(Arc::new(quic_config));
+        let mut client_config = self.quic_client_config.clone();
 
         // Transport config: BBR congestion control for Hysteria2
         let mut transport = quinn::TransportConfig::default();
@@ -332,6 +310,43 @@ async fn write_varint(writer: &mut quinn::SendStream, value: u64) -> Result<()> 
     Ok(())
 }
 
+/// Globally cached root cert store for QUIC TLS (built once).
+static QUIC_ROOT_CERTS: std::sync::OnceLock<rustls::RootCertStore> = std::sync::OnceLock::new();
+
+fn get_quic_root_certs() -> &'static rustls::RootCertStore {
+    QUIC_ROOT_CERTS.get_or_init(|| {
+        let mut store = rustls::RootCertStore::empty();
+        store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        store
+    })
+}
+
+/// Build a quinn::ClientConfig with TLS settings (reusable across reconnections).
+fn build_quic_client_config(
+    skip_cert_verify: bool,
+    alpn: &[String],
+) -> Result<quinn::ClientConfig> {
+    let mut rustls_config = if skip_cert_verify {
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(InsecureHy2Verifier))
+            .with_no_client_auth()
+    } else {
+        rustls::ClientConfig::builder()
+            .with_root_certificates(get_quic_root_certs().clone())
+            .with_no_client_auth()
+    };
+
+    if !alpn.is_empty() {
+        rustls_config.alpn_protocols = alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
+    }
+
+    let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
+        .map_err(|e| anyhow::anyhow!("QUIC TLS config error: {}", e))?;
+
+    Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
+}
+
 /// Resolve server hostname to SocketAddr, preferring IPv4.
 async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr> {
     use tokio::net::lookup_host;
@@ -418,6 +433,5 @@ mod tests {
         };
         let outbound = Hysteria2Outbound::new("server.com", 443, "pass", Some(&tls)).unwrap();
         assert_eq!(outbound.sni, "custom.sni.com");
-        assert!(outbound.skip_cert_verify);
     }
 }

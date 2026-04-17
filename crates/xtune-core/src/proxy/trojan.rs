@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 use crate::config::model::TlsConfig;
 
 use super::connector::{BoxProxyStream, Outbound};
-use super::transport::connect_with_tls;
+use super::transport::{build_tls_connector, connect_with_connector};
 
 /// Trojan outbound connector.
 /// Trojan always uses TLS - the protocol is designed to look like normal HTTPS traffic.
@@ -16,19 +16,27 @@ pub struct TrojanOutbound {
     server: String,
     port: u16,
     password_hash: String, // hex(SHA224(password)), 56 chars
-    tls_config: Option<TlsConfig>,
+    sni: String,
+    /// Pre-built TLS connector (avoids rebuilding root certs per connection)
+    connector: craft_tls::TlsConnector,
 }
 
 impl TrojanOutbound {
     pub fn new(server: &str, port: u16, password: &str, tls_config: Option<&TlsConfig>) -> Self {
         let hash = Sha224::digest(password.as_bytes());
         let password_hash = hex::encode(hash);
+        let sni = tls_config
+            .and_then(|c| c.sni.as_deref())
+            .unwrap_or(server)
+            .to_string();
+        let connector = build_tls_connector(tls_config);
 
         Self {
             server: server.to_string(),
             port,
             password_hash,
-            tls_config: tls_config.cloned(),
+            sni,
+            connector,
         }
     }
 }
@@ -41,11 +49,13 @@ impl Outbound for TrojanOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let target_host = host.to_string();
         Box::pin(async move {
-            let mut stream = connect_with_tls(
+            let mut stream = connect_with_connector(
                 &self.server,
                 self.port,
-                self.tls_config.as_ref(),
+                &self.connector,
+                &self.sni,
                 true, // Trojan always uses TLS
+                std::time::Duration::from_secs(15),
             )
             .await
             .with_context(|| {

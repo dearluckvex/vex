@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -18,6 +18,17 @@ use crate::config::model::TlsConfig;
 /// Default timeout for TCP connect + TLS handshake.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Globally cached root certificate store (built once, reused everywhere).
+static ROOT_CERT_STORE: OnceLock<craft_tls::rustls::RootCertStore> = OnceLock::new();
+
+fn get_root_cert_store() -> &'static craft_tls::rustls::RootCertStore {
+    ROOT_CERT_STORE.get_or_init(|| {
+        let mut store = craft_tls::rustls::RootCertStore::empty();
+        store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        store
+    })
+}
+
 /// Map a fingerprint name from config to a craftls FingerprintBuilder.
 fn fingerprint_builder(
     name: Option<&str>,
@@ -33,18 +44,13 @@ fn fingerprint_builder(
     }
 }
 
-/// Connect to a remote server with TLS using browser fingerprint emulation.
-pub async fn connect_tls(
-    tcp: TcpStream,
-    sni: &str,
-    config: Option<&TlsConfig>,
-) -> Result<TlsStream<TcpStream>> {
+/// Build a reusable TLS connector from config. Call once per outbound
+/// and store the result — avoids rebuilding root cert store and
+/// ClientConfig on every connection.
+pub fn build_tls_connector(config: Option<&TlsConfig>) -> TlsConnector {
     let skip_verify = config.map(|c| c.skip_cert_verify).unwrap_or(false);
     let alpn = config.and_then(|c| c.alpn.as_ref());
     let fp_name = config.and_then(|c| c.fingerprint.as_deref());
-
-    let mut root_store = craft_tls::rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
     let base_config = if skip_verify {
         ClientConfig::builder()
@@ -53,12 +59,10 @@ pub async fn connect_tls(
             .with_no_client_auth()
     } else {
         ClientConfig::builder()
-            .with_root_certificates(root_store)
+            .with_root_certificates(get_root_cert_store().clone())
             .with_no_client_auth()
     };
 
-    // Apply browser TLS fingerprint emulation.
-    // If user specifies custom ALPN, tell craftls not to override it.
     let fp = if alpn.is_some() {
         fingerprint_builder(fp_name).do_not_override_alpn()
     } else {
@@ -66,19 +70,35 @@ pub async fn connect_tls(
     };
     let mut tls_config = base_config.with_fingerprint(fp);
 
-    // Set ALPN from config if specified (craftls won't override when do_not_override_alpn).
-    // Otherwise craftls already set browser-appropriate ALPN via the fingerprint.
     if let Some(alpn) = alpn {
         tls_config.alpn_protocols = alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
     }
 
-    let connector = TlsConnector::from(Arc::new(tls_config));
+    TlsConnector::from(Arc::new(tls_config))
+}
+
+/// Connect to a remote server with TLS using a pre-built connector.
+pub async fn connect_tls_with(
+    tcp: TcpStream,
+    sni: &str,
+    connector: &TlsConnector,
+) -> Result<TlsStream<TcpStream>> {
     let server_name = ServerName::try_from(sni.to_string())?;
     let stream = connector
         .connect(server_name, tcp)
         .await
         .with_context(|| format!("TLS handshake failed with SNI '{}'", sni))?;
     Ok(stream)
+}
+
+/// Connect to a remote server with TLS using browser fingerprint emulation.
+pub async fn connect_tls(
+    tcp: TcpStream,
+    sni: &str,
+    config: Option<&TlsConfig>,
+) -> Result<TlsStream<TcpStream>> {
+    let connector = build_tls_connector(config);
+    connect_tls_with(tcp, sni, &connector).await
 }
 
 /// Connect to a remote server over TCP, optionally wrapping with TLS.
@@ -93,6 +113,48 @@ pub async fn connect_with_tls(
     use_tls: bool,
 ) -> Result<Box<dyn super::connector::ProxyStream>> {
     connect_with_tls_timeout(server, port, tls_config, use_tls, DEFAULT_CONNECT_TIMEOUT).await
+}
+
+/// Like [`connect_with_tls`] but with a pre-built TLS connector for
+/// connection reuse (avoids rebuilding root certs + fingerprints per call).
+pub async fn connect_with_connector(
+    server: &str,
+    port: u16,
+    connector: &TlsConnector,
+    sni: &str,
+    use_tls: bool,
+    timeout: Duration,
+) -> Result<Box<dyn super::connector::ProxyStream>> {
+    let addr = format!("{}:{}", server, port);
+
+    let tcp = tokio::time::timeout(timeout, TcpStream::connect(&addr))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "TCP connection to {} timed out after {}s",
+                addr,
+                timeout.as_secs()
+            )
+        })?
+        .with_context(|| format!("TCP connection to {} failed", addr))?;
+
+    tcp.set_nodelay(true).ok();
+
+    if use_tls {
+        let tls = tokio::time::timeout(timeout, connect_tls_with(tcp, sni, connector))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "TLS handshake with {} (SNI: {}) timed out after {}s",
+                    addr,
+                    sni,
+                    timeout.as_secs()
+                )
+            })??;
+        Ok(Box::new(tls))
+    } else {
+        Ok(Box::new(tcp))
+    }
 }
 
 /// Like [`connect_with_tls`] but with an explicit timeout.

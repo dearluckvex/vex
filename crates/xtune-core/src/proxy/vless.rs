@@ -7,15 +7,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::config::model::{TlsConfig, TransportConfig, TransportType};
 
 use super::connector::{BoxProxyStream, Outbound, ProxyStream};
-use super::transport::connect_with_tls;
+use super::transport::{build_tls_connector, connect_with_connector};
 
 /// VLESS outbound connector.
 pub struct VlessOutbound {
     server: String,
     port: u16,
     uuid: [u8; 16],
-    tls_config: Option<TlsConfig>,
+    sni: String,
     use_tls: bool,
+    /// Pre-built TLS connector (avoids rebuilding root certs per connection)
+    connector: craft_tls::TlsConnector,
 }
 
 impl VlessOutbound {
@@ -58,12 +60,20 @@ impl VlessOutbound {
             None => (None, false),
         };
 
+        let sni = tls_config
+            .as_ref()
+            .and_then(|c| c.sni.as_deref())
+            .unwrap_or(server)
+            .to_string();
+        let connector = build_tls_connector(tls_config.as_ref());
+
         Ok(Self {
             server: server.to_string(),
             port,
             uuid: *uuid.as_bytes(),
-            tls_config,
+            sni,
             use_tls,
+            connector,
         })
     }
 }
@@ -76,11 +86,13 @@ impl Outbound for VlessOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let target_host = host.to_string();
         Box::pin(async move {
-            let mut stream = connect_with_tls(
+            let mut stream = connect_with_connector(
                 &self.server,
                 self.port,
-                self.tls_config.as_ref(),
+                &self.connector,
+                &self.sni,
                 self.use_tls,
+                std::time::Duration::from_secs(15),
             )
             .await
             .with_context(|| {
