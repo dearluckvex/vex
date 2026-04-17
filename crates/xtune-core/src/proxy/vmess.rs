@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::Aes128Gcm;
@@ -15,6 +16,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use crate::config::model::{TlsConfig, TransportConfig, TransportType};
 
 use super::connector::{BoxProxyStream, Outbound, ProxyStream};
+use super::pool::{ConnFactory, ConnPool};
 use super::transport::{build_tls_connector, connect_with_connector};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -52,16 +54,38 @@ impl VMessSecurity {
     }
 }
 
+/// Factory that creates TCP+TLS connections to the VMess proxy server.
+struct VMessConnFactory {
+    server: String,
+    port: u16,
+    sni: String,
+    use_tls: bool,
+    connector: craft_tls::TlsConnector,
+}
+
+impl ConnFactory for VMessConnFactory {
+    fn create(&self) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
+        Box::pin(async {
+            connect_with_connector(
+                &self.server,
+                self.port,
+                &self.connector,
+                &self.sni,
+                self.use_tls,
+                std::time::Duration::from_secs(15),
+            )
+            .await
+        })
+    }
+}
+
 /// VMess AEAD outbound connector.
 pub struct VMessOutbound {
     server: String,
     port: u16,
     uuid: [u8; 16],
     security: VMessSecurity,
-    sni: String,
-    use_tls: bool,
-    /// Pre-built TLS connector (avoids rebuilding root certs per connection)
-    connector: craft_tls::TlsConnector,
+    pool: ConnPool,
 }
 
 impl VMessOutbound {
@@ -106,14 +130,21 @@ impl VMessOutbound {
             .to_string();
         let connector = build_tls_connector(tls_config.as_ref());
 
+        let factory = Arc::new(VMessConnFactory {
+            server: server.to_string(),
+            port,
+            sni,
+            use_tls,
+            connector,
+        });
+        let pool = ConnPool::new(factory);
+
         Ok(Self {
             server: server.to_string(),
             port,
             uuid: *parsed_uuid.as_bytes(),
             security: VMessSecurity::from_str(cipher),
-            sni,
-            use_tls,
-            connector,
+            pool,
         })
     }
 }
@@ -126,16 +157,7 @@ impl Outbound for VMessOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let target_host = host.to_string();
         Box::pin(async move {
-            let stream = connect_with_connector(
-                &self.server,
-                self.port,
-                &self.connector,
-                &self.sni,
-                self.use_tls,
-                std::time::Duration::from_secs(15),
-            )
-            .await
-            .with_context(|| {
+            let stream = self.pool.get().await.with_context(|| {
                 format!(
                     "VMess: failed to connect to {}:{} (target: {}:{})",
                     self.server, self.port, target_host, port

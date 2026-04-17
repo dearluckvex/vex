@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,17 +8,40 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::config::model::{TlsConfig, TransportConfig, TransportType};
 
 use super::connector::{BoxProxyStream, Outbound, ProxyStream};
+use super::pool::{ConnFactory, ConnPool};
 use super::transport::{build_tls_connector, connect_with_connector};
+
+/// Factory that creates TCP+TLS connections to the VLESS proxy server.
+struct VlessConnFactory {
+    server: String,
+    port: u16,
+    sni: String,
+    use_tls: bool,
+    connector: craft_tls::TlsConnector,
+}
+
+impl ConnFactory for VlessConnFactory {
+    fn create(&self) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
+        Box::pin(async {
+            connect_with_connector(
+                &self.server,
+                self.port,
+                &self.connector,
+                &self.sni,
+                self.use_tls,
+                std::time::Duration::from_secs(15),
+            )
+            .await
+        })
+    }
+}
 
 /// VLESS outbound connector.
 pub struct VlessOutbound {
     server: String,
     port: u16,
     uuid: [u8; 16],
-    sni: String,
-    use_tls: bool,
-    /// Pre-built TLS connector (avoids rebuilding root certs per connection)
-    connector: craft_tls::TlsConnector,
+    pool: ConnPool,
 }
 
 impl VlessOutbound {
@@ -67,13 +91,20 @@ impl VlessOutbound {
             .to_string();
         let connector = build_tls_connector(tls_config.as_ref());
 
+        let factory = Arc::new(VlessConnFactory {
+            server: server.to_string(),
+            port,
+            sni,
+            use_tls,
+            connector,
+        });
+        let pool = ConnPool::new(factory);
+
         Ok(Self {
             server: server.to_string(),
             port,
             uuid: *uuid.as_bytes(),
-            sni,
-            use_tls,
-            connector,
+            pool,
         })
     }
 }
@@ -86,16 +117,7 @@ impl Outbound for VlessOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let target_host = host.to_string();
         Box::pin(async move {
-            let mut stream = connect_with_connector(
-                &self.server,
-                self.port,
-                &self.connector,
-                &self.sni,
-                self.use_tls,
-                std::time::Duration::from_secs(15),
-            )
-            .await
-            .with_context(|| {
+            let mut stream = self.pool.get().await.with_context(|| {
                 format!(
                     "VLESS: failed to connect to {}:{} (target: {}:{})",
                     self.server, self.port, target_host, port

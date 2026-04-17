@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use sha2::{Digest, Sha224};
@@ -8,7 +9,32 @@ use tokio::io::AsyncWriteExt;
 use crate::config::model::TlsConfig;
 
 use super::connector::{BoxProxyStream, Outbound};
+use super::pool::{ConnFactory, ConnPool};
 use super::transport::{build_tls_connector, connect_with_connector};
+
+/// Factory that creates TCP+TLS connections to the Trojan proxy server.
+struct TrojanConnFactory {
+    server: String,
+    port: u16,
+    sni: String,
+    connector: craft_tls::TlsConnector,
+}
+
+impl ConnFactory for TrojanConnFactory {
+    fn create(&self) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
+        Box::pin(async {
+            connect_with_connector(
+                &self.server,
+                self.port,
+                &self.connector,
+                &self.sni,
+                true,
+                std::time::Duration::from_secs(15),
+            )
+            .await
+        })
+    }
+}
 
 /// Trojan outbound connector.
 /// Trojan always uses TLS - the protocol is designed to look like normal HTTPS traffic.
@@ -16,9 +42,7 @@ pub struct TrojanOutbound {
     server: String,
     port: u16,
     password_hash: String, // hex(SHA224(password)), 56 chars
-    sni: String,
-    /// Pre-built TLS connector (avoids rebuilding root certs per connection)
-    connector: craft_tls::TlsConnector,
+    pool: ConnPool,
 }
 
 impl TrojanOutbound {
@@ -31,12 +55,19 @@ impl TrojanOutbound {
             .to_string();
         let connector = build_tls_connector(tls_config);
 
+        let factory = Arc::new(TrojanConnFactory {
+            server: server.to_string(),
+            port,
+            sni,
+            connector,
+        });
+        let pool = ConnPool::new(factory);
+
         Self {
             server: server.to_string(),
             port,
             password_hash,
-            sni,
-            connector,
+            pool,
         }
     }
 }
@@ -49,16 +80,7 @@ impl Outbound for TrojanOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let target_host = host.to_string();
         Box::pin(async move {
-            let mut stream = connect_with_connector(
-                &self.server,
-                self.port,
-                &self.connector,
-                &self.sni,
-                true, // Trojan always uses TLS
-                std::time::Duration::from_secs(15),
-            )
-            .await
-            .with_context(|| {
+            let mut stream = self.pool.get().await.with_context(|| {
                 format!(
                     "Trojan: failed to connect to {}:{} (target: {}:{})",
                     self.server, self.port, target_host, port
