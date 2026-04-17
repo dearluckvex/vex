@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 /// DNS resolver configuration.
 #[derive(Debug, Clone)]
@@ -71,12 +71,17 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
+/// In-flight DNS query entry for deduplication.
+type InflightEntry = Arc<tokio::sync::OnceCell<Result<Vec<IpAddr>, String>>>;
+
 /// The main DNS resolver.
 pub struct DnsResolver {
     config: DnsConfig,
     cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
     /// Shared reqwest client for DoH queries (avoids per-query creation)
     doh_client: reqwest::Client,
+    /// In-flight queries: concurrent resolves for the same domain share one query
+    inflight: Mutex<HashMap<String, InflightEntry>>,
 }
 
 impl DnsResolver {
@@ -96,6 +101,7 @@ impl DnsResolver {
             config,
             cache: Arc::new(RwLock::new(HashMap::new())),
             doh_client,
+            inflight: Mutex::new(HashMap::new()),
         }
     }
 
@@ -116,6 +122,38 @@ impl DnsResolver {
             }
         }
 
+        // In-flight dedup: if another task is already resolving this domain,
+        // share its result instead of sending a duplicate query.
+        let cell = {
+            let mut inflight = self.inflight.lock().await;
+            inflight
+                .entry(domain.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                .clone()
+        };
+
+        // Only the first caller runs resolve_uncached(); others wait for its result.
+        let result = cell
+            .get_or_init(|| async {
+                self.resolve_uncached(domain)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+
+        // Clean up inflight entry so future queries aren't stale
+        {
+            let mut inflight = self.inflight.lock().await;
+            inflight.remove(domain);
+        }
+
+        result
+            .clone()
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// Perform the actual DNS resolution (post-cache, no dedup).
+    async fn resolve_uncached(&self, domain: &str) -> Result<Vec<IpAddr>> {
         // Determine which server group to use
         let group = self.match_domain_group(domain);
         let servers = match group {

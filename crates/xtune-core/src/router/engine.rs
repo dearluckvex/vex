@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::geoip::GeoIpDb;
 use crate::config::model::RoutingRule;
+
+/// Maximum number of cached route decisions.
+const ROUTE_CACHE_CAP: usize = 4096;
 
 /// Action to take for a matched connection.
 #[derive(Debug, Clone, PartialEq)]
@@ -120,11 +124,17 @@ impl Default for RuleSet {
 pub struct Router {
     rules: RuleSet,
     geoip: Option<Arc<GeoIpDb>>,
+    /// LRU-ish cache: host -> action (cleared when full)
+    cache: RwLock<HashMap<String, RouteAction>>,
 }
 
 impl Router {
     pub fn new(rules: RuleSet) -> Self {
-        Self { rules, geoip: None }
+        Self {
+            rules,
+            geoip: None,
+            cache: RwLock::new(HashMap::new()),
+        }
     }
 
     pub fn with_geoip(mut self, geoip: Arc<GeoIpDb>) -> Self {
@@ -135,6 +145,28 @@ impl Router {
     /// Evaluate routing rules for a given destination.
     /// `host` can be a domain name or IP address string.
     pub fn route(&self, host: &str, port: u16) -> RouteAction {
+        // Fast path: check cache (port is unused in all match rules)
+        if let Ok(cache) = self.cache.read() {
+            if let Some(action) = cache.get(host) {
+                return action.clone();
+            }
+        }
+
+        let action = self.route_uncached(host, port);
+
+        // Store in cache
+        if let Ok(mut cache) = self.cache.write() {
+            if cache.len() >= ROUTE_CACHE_CAP {
+                cache.clear();
+            }
+            cache.insert(host.to_string(), action.clone());
+        }
+
+        action
+    }
+
+    /// Perform rule matching without cache.
+    fn route_uncached(&self, host: &str, port: u16) -> RouteAction {
         let host_lower = host.to_lowercase();
         let ip: Option<IpAddr> = host.parse().ok();
 
