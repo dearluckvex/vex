@@ -18,19 +18,21 @@ use xtune_core::{
     system_proxy_supported, tun_requirements, tun_supported,
 };
 
-// Color palette
-const BG_PRIMARY: u32 = 0x1a1a2e;
-const BG_SIDEBAR: u32 = 0x16213e;
-const BG_CARD: u32 = 0x1f2940;
-const BG_CARD_HOVER: u32 = 0x263352;
-const BORDER_COLOR: u32 = 0x2a2a4a;
-const ACCENT: u32 = 0x00d4ff;
-const TEXT_PRIMARY: u32 = 0xe0e0e0;
-const TEXT_SECONDARY: u32 = 0x888888;
-const TEXT_MUTED: u32 = 0x666666;
-const SUCCESS_COLOR: u32 = 0x4ade80;
-const WARNING_COLOR: u32 = 0xfbbf24;
-const DANGER_COLOR: u32 = 0xf87171;
+// Color palette — refined dark theme with soft contrast
+const BG_PRIMARY: u32 = 0x0f1117;    // Near-black — main background
+const BG_SIDEBAR: u32 = 0x161921;    // Slightly lighter — sidebar
+const BG_CARD: u32 = 0x1a1e2a;       // Subtle card surface
+const BG_CARD_HOVER: u32 = 0x222838;  // Hover lift
+const BORDER_COLOR: u32 = 0x2b3040;  // Soft border, barely visible
+const ACCENT: u32 = 0x6c8cff;        // Calm blue accent
+const ACCENT_DIM: u32 = 0x4a6adf;    // Dimmer accent for borders/indicators
+const TEXT_PRIMARY: u32 = 0xeaedf3;   // Off-white — comfortable reading
+const TEXT_SECONDARY: u32 = 0x9ba3b5; // Mid-gray — good contrast (AA)
+const TEXT_MUTED: u32 = 0x626a7e;     // Muted labels
+const SUCCESS_COLOR: u32 = 0x5ee6a0;  // Soft green
+const WARNING_COLOR: u32 = 0xf0c74f;  // Warm amber
+const DANGER_COLOR: u32 = 0xf07070;   // Soft red
+const BG_ACCENT_SUBTLE: u32 = 0x1c2236; // Subtle tinted bg for active states
 
 /// Main application state
 pub struct AppState {
@@ -1120,7 +1122,7 @@ impl AppState {
         let active = self.active_view.clone();
 
         div()
-            .w(px(200.0))
+            .w(px(220.0))
             .h_full()
             .flex()
             .flex_col()
@@ -1133,47 +1135,77 @@ impl AppState {
                     .flex()
                     .flex_col()
                     .child(
-                        // Logo
-                        div().px_4().py_4().child(
-                            div()
-                                .text_xl()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(ACCENT))
-                                .child("⚡ XTune"),
-                        ),
+                        // Logo area
+                        div()
+                            .px_5()
+                            .py_5()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xl()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(ACCENT))
+                                            .child("⚡"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .text_base()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(TEXT_PRIMARY))
+                                                    .child("XTune"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(rgb(TEXT_MUTED))
+                                                    .child("Proxy Client"),
+                                            ),
+                                    ),
+                            ),
                     )
                     .child(
                         // Nav items
                         div()
                             .flex()
                             .flex_col()
-                            .gap_1()
-                            .px_2()
-                            .child(self.nav_item("🏠  Home", ActiveView::Home, &active, cx))
-                            .child(self.nav_item("📡  Nodes", ActiveView::Nodes, &active, cx))
-                            .child(self.nav_item("⬇️  Config", ActiveView::Config, &active, cx))
-                            .child(self.nav_item("📋  Rules", ActiveView::Rules, &active, cx))
+                            .gap_0p5()
+                            .px_3()
+                            .mt_2()
+                            .child(self.nav_item("Home", "🏠", ActiveView::Home, &active, cx))
+                            .child(self.nav_item("Nodes", "📡", ActiveView::Nodes, &active, cx))
+                            .child(self.nav_item("Config", "⬇️", ActiveView::Config, &active, cx))
+                            .child(self.nav_item("Rules", "📋", ActiveView::Rules, &active, cx))
                             .child(self.nav_item(
-                                "⚙️  Settings",
+                                "Settings",
+                                "⚙️",
                                 ActiveView::Settings,
                                 &active,
                                 cx,
                             ))
-                            .child(self.nav_item("📜  Logs", ActiveView::Logs, &active, cx)),
+                            .child(self.nav_item("Logs", "📜", ActiveView::Logs, &active, cx)),
                     ),
             )
             .child(
                 // Bottom info
                 div()
-                    .px_4()
-                    .py_3()
+                    .px_5()
+                    .py_4()
                     .border_t_1()
                     .border_color(rgb(BORDER_COLOR))
                     .child(
                         div()
                             .text_xs()
                             .text_color(rgb(TEXT_MUTED))
-                            .child("v0.1.0 • Rust Proxy Client"),
+                            .child("v0.1.0"),
                     ),
             )
     }
@@ -1181,25 +1213,58 @@ impl AppState {
     fn nav_item(
         &mut self,
         label: &str,
+        icon: &str,
         view: ActiveView,
         active: &ActiveView,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_active = *active == view;
-        let label_owned = label.to_string();
 
-        let btn = Button::new(SharedString::from(label_owned.clone()))
-            .label(label_owned)
+        let bg = if is_active {
+            rgb(BG_ACCENT_SUBTLE)
+        } else {
+            rgb(BG_SIDEBAR)
+        };
+        let text_color = if is_active {
+            rgb(ACCENT)
+        } else {
+            rgb(TEXT_SECONDARY)
+        };
+        let indicator_color = if is_active {
+            rgb(ACCENT)
+        } else {
+            rgb(BG_SIDEBAR)
+        };
+
+        div()
+            .id(SharedString::from(format!("nav-{}", label)))
+            .flex()
+            .flex_row()
+            .items_center()
             .w_full()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .bg(bg)
+            .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_view(view.clone(), cx);
-            }));
-
-        if is_active {
-            btn.primary()
-        } else {
-            btn.ghost()
-        }
+            }))
+            .child(
+                // Active indicator bar
+                div()
+                    .w(px(3.0))
+                    .h(px(18.0))
+                    .rounded(px(1.5))
+                    .mr_3()
+                    .bg(indicator_color),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(text_color)
+                    .child(format!("{} {}", icon, label)),
+            )
     }
 }
 
@@ -1289,24 +1354,35 @@ impl AppState {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             // Title
             .child(
                 div()
-                    .text_2xl()
-                    .font_weight(FontWeight::BOLD)
-                    .child("XTune Proxy Client"),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child("Dashboard"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_MUTED))
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(4.0))
+                            .bg(rgb(BG_ACCENT_SUBTLE))
+                            .child("v0.1.0"),
+                    ),
             )
             // Proxy Mode card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("Proxy Mode"),
-                    )
+                    .child(self.card_title("Proxy Mode"))
                     .child(
                         div()
                             .flex()
@@ -1370,13 +1446,7 @@ impl AppState {
             // System Proxy card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("System Proxy"),
-                    )
+                    .child(self.card_title("System Proxy"))
                     .child(
                         div()
                             .flex()
@@ -1412,13 +1482,7 @@ impl AppState {
             // TUN Mode card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("🔒 TUN Mode (Global Transparent Proxy)"),
-                    )
+                    .child(self.card_title("🔒 TUN Mode"))
                     .child(
                         div()
                             .flex()
@@ -1470,8 +1534,14 @@ impl AppState {
                     ),
             )
             // Status card
-            .child(
-                self.card().child(
+            .child({
+                let card = self.card();
+                let card = if self.proxy_running {
+                    card.border_color(rgb(ACCENT_DIM))
+                } else {
+                    card
+                };
+                card.child(
                     div()
                         .flex()
                         .flex_col()
@@ -1481,7 +1551,7 @@ impl AppState {
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .gap_2()
+                                .gap_3()
                                 .child(
                                     div()
                                         .w(px(10.0))
@@ -1491,9 +1561,9 @@ impl AppState {
                                 )
                                 .child(
                                     div()
-                                        .text_lg()
+                                        .text_base()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child(format!("Status: {}", self.proxy_status)),
+                                        .child(self.proxy_status.clone()),
                                 ),
                         )
                         .child(
@@ -1531,18 +1601,12 @@ impl AppState {
                                 connect_btn.primary()
                             }
                         }),
-                ),
-            )
+                )
+            })
             // Proxy info card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_2()
-                            .child("Proxy Endpoints"),
-                    )
+                    .child(self.card_title("Endpoints"))
                     .child(
                         div()
                             .flex()
@@ -1567,13 +1631,8 @@ impl AppState {
                             .flex_row()
                             .items_center()
                             .justify_between()
-                            .mb_2()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Statistics"),
-                            )
+                            .mb_4()
+                            .child(self.card_title("Statistics").mb_0())
                             .child(
                                 Button::new("refresh-stats")
                                     .label("↻ Refresh".to_string())
@@ -1598,13 +1657,7 @@ impl AppState {
             // Protocols card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_2()
-                            .child("Supported Protocols"),
-                    )
+                    .child(self.card_title("Supported Protocols"))
                     .child(
                         div()
                             .flex()
@@ -1623,30 +1676,42 @@ impl AppState {
 
     fn card(&self) -> Div {
         div()
-            .p_4()
+            .p_5()
             .rounded_xl()
             .bg(rgb(BG_CARD))
             .border_1()
             .border_color(rgb(BORDER_COLOR))
-            .shadow_sm()
+            .shadow_md()
+    }
+
+    /// Section title inside a card (e.g. "Proxy Mode", "System Proxy").
+    fn card_title(&self, text: &str) -> Div {
+        div()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(rgb(TEXT_PRIMARY))
+            .mb_4()
+            .child(text.to_string())
     }
 
     fn info_row(&self, label: &str, value: &str) -> Div {
         div()
             .flex()
             .flex_row()
-            .gap_2()
+            .items_center()
+            .gap_3()
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(TEXT_SECONDARY))
-                    .w(px(60.0))
-                    .child(format!("{}:", label)),
+                    .text_color(rgb(TEXT_MUTED))
+                    .w(px(80.0))
+                    .child(format!("{}", label)),
             )
             .child(
                 div()
                     .text_sm()
                     .font(localized_font())
+                    .text_color(rgb(TEXT_PRIMARY))
                     .child(value.to_string()),
             )
     }
@@ -1656,9 +1721,14 @@ impl AppState {
             .flex()
             .flex_col()
             .items_center()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .bg(rgb(BG_ACCENT_SUBTLE))
             .child(
                 div()
-                    .text_2xl()
+                    .text_xl()
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(ACCENT))
                     .child(value.to_string()),
@@ -1666,7 +1736,7 @@ impl AppState {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(TEXT_SECONDARY))
+                    .text_color(rgb(TEXT_MUTED))
                     .child(label.to_string()),
             )
     }
@@ -1703,7 +1773,7 @@ impl AppState {
         let mut content = div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             .child(
                 div()
                     .flex()
@@ -1712,13 +1782,30 @@ impl AppState {
                     .justify_between()
                     .child(
                         div()
-                            .text_2xl()
-                            .font_weight(FontWeight::BOLD)
-                            .child(if filter_text.is_empty() {
-                                format!("Nodes ({})", node_count)
-                            } else {
-                                format!("Nodes ({}/{})", shown_count, node_count)
-                            }),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Nodes"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_MUTED))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(4.0))
+                                    .bg(rgb(BG_ACCENT_SUBTLE))
+                                    .child(if filter_text.is_empty() {
+                                        format!("{}", node_count)
+                                    } else {
+                                        format!("{}/{}", shown_count, node_count)
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -1834,21 +1921,25 @@ impl AppState {
             .unwrap_or(rgb(TEXT_MUTED));
 
         let bg = if is_active {
-            rgb(0x204262)
+            rgb(BG_ACCENT_SUBTLE)
         } else if is_selected {
             rgb(BG_CARD_HOVER)
         } else {
             rgb(BG_CARD)
         };
 
-        let select_indicator_bg = if is_active || is_selected {
+        let select_indicator_bg = if is_active {
             rgb(ACCENT)
+        } else if is_selected {
+            rgb(ACCENT_DIM)
         } else {
-            rgb(BG_CARD)
+            rgb(BORDER_COLOR)
         };
 
-        let border = if is_active || is_selected {
-            rgb(ACCENT)
+        let border = if is_active {
+            rgb(ACCENT_DIM)
+        } else if is_selected {
+            rgb(0x3a4060)
         } else {
             rgb(BORDER_COLOR)
         };
@@ -1965,7 +2056,7 @@ impl AppState {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             // Title
             .child(
                 div()
@@ -1976,13 +2067,7 @@ impl AppState {
             // Import card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("Import Subscription"),
-                    )
+                    .child(self.card_title("Import Subscription"))
                     .child(
                         div()
                             .flex()
@@ -2034,13 +2119,7 @@ impl AppState {
             // Add node by URI card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("Add Node by Share Link"),
-                    )
+                    .child(self.card_title("Add Node by Share Link"))
                     .child(
                         div()
                             .flex()
@@ -2075,13 +2154,7 @@ impl AppState {
             // Node summary card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child(format!("Node Summary — {} total", node_count)),
-                    )
+                    .child(self.card_title(&format!("Node Summary — {} total", node_count)))
                     .child(
                         div()
                             .flex()
@@ -2380,7 +2453,7 @@ impl AppState {
         let mut content = div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             // Title
             .child(
                 div()
@@ -2390,9 +2463,26 @@ impl AppState {
                     .justify_between()
                     .child(
                         div()
-                            .text_2xl()
-                            .font_weight(FontWeight::BOLD)
-                            .child(format!("Routing Rules ({})", rule_count)),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Routing Rules"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_MUTED))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(4.0))
+                                    .bg(rgb(BG_ACCENT_SUBTLE))
+                                    .child(format!("{}", rule_count)),
+                            ),
                     )
                     .child(
                         div()
@@ -2421,15 +2511,11 @@ impl AppState {
             .child(
                 self.card()
                     .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child(if self.editing_rule_index.is_some() {
-                                "Edit Rule".to_string()
-                            } else {
-                                "Add Rule".to_string()
-                            }),
+                        self.card_title(if self.editing_rule_index.is_some() {
+                            "Edit Rule"
+                        } else {
+                            "Add Rule"
+                        }),
                     )
                     .child(
                         div()
@@ -2553,13 +2639,9 @@ impl AppState {
         // Info card
         content = content.child(
             self.card()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .mb_2()
-                        .child("ℹ️ How Rules Work"),
-                )
+                .bg(rgb(BG_ACCENT_SUBTLE))
+                .border_color(rgb(ACCENT_DIM))
+                .child(self.card_title("ℹ️ How Rules Work"))
                 .child(
                     div()
                         .flex()
@@ -2686,7 +2768,7 @@ impl AppState {
         let mut content = div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             .child(
                 div()
                     .flex()
@@ -2695,9 +2777,26 @@ impl AppState {
                     .justify_between()
                     .child(
                         div()
-                            .text_2xl()
-                            .font_weight(FontWeight::BOLD)
-                            .child(format!("Logs ({})", count)),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Logs"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_MUTED))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(4.0))
+                                    .bg(rgb(BG_ACCENT_SUBTLE))
+                                    .child(format!("{}", count)),
+                            ),
                     )
                     .child(
                         div()
@@ -2754,9 +2853,9 @@ impl AppState {
                 .flex()
                 .flex_col()
                 .gap_0p5()
-                .p_3()
+                .p_4()
                 .rounded_xl()
-                .bg(rgb(0x111827))
+                .bg(rgb(0x0c0e14))
                 .border_1()
                 .border_color(rgb(BORDER_COLOR));
 
@@ -2830,7 +2929,7 @@ impl AppState {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             // Title
             .child(
                 div()
@@ -2841,13 +2940,7 @@ impl AppState {
             // Proxy settings card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("Proxy Settings"),
-                    )
+                    .child(self.card_title("Proxy Settings"))
                     .child(
                         div()
                             .flex()
@@ -2913,13 +3006,7 @@ impl AppState {
             )
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("System Proxy Status"),
-                    )
+                    .child(self.card_title("System Proxy Status"))
                     .child(
                         div()
                             .flex()
@@ -2948,13 +3035,7 @@ impl AppState {
             // About card
             .child(
                 self.card()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .mb_3()
-                            .child("About"),
-                    )
+                    .child(self.card_title("About"))
                     .child(
                         div()
                             .flex()
@@ -2985,10 +3066,10 @@ impl AppState {
             .flex()
             .flex_row()
             .items_center()
-            .gap_3()
+            .gap_4()
             .child(
                 div()
-                    .w(px(120.0))
+                    .w(px(130.0))
                     .text_sm()
                     .text_color(rgb(TEXT_SECONDARY))
                     .child(label.to_string()),
@@ -3016,12 +3097,8 @@ impl AppState {
 
         self.card()
             .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .mb_3()
-                    .font(localized_font())
-                    .child(format!("Node Details — {}", node.name)),
+                self.card_title(&format!("Node Details — {}", node.name))
+                    .font(localized_font()),
             )
             .child(
                 div()
