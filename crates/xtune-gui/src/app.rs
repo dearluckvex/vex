@@ -95,6 +95,9 @@ pub struct AppState {
     node_filter: String,
     node_filter_input: Entity<InputState>,
 
+    // Nodes currently being latency-tested
+    latency_testing: std::collections::HashSet<usize>,
+
     // Manual node URI input
     node_uri_input: Entity<InputState>,
 
@@ -248,6 +251,7 @@ impl AppState {
             rule_target_input,
             node_filter: String::new(),
             node_filter_input,
+            latency_testing: std::collections::HashSet::new(),
             node_uri_input,
             editing_rule_index: None,
             log_buffer,
@@ -624,7 +628,8 @@ impl AppState {
             None => return,
         };
 
-        // Set latency to a sentinel while testing
+        // Mark as testing and clear previous latency
+        self.latency_testing.insert(index);
         if let Some(n) = self.nodes.get_mut(index) {
             n.latency_ms = None;
         }
@@ -648,6 +653,7 @@ impl AppState {
                 .await;
 
             weak.update(cx, |this: &mut AppState, cx| {
+                this.latency_testing.remove(&index);
                 if let Some(n) = this.nodes.get_mut(index) {
                     match result {
                         Ok(Ok(ms)) => n.latency_ms = Some(ms),
@@ -1567,12 +1573,24 @@ impl AppState {
                                             move |el, delta| el.opacity(delta),
                                         ),
                                 )
-                                .child(
-                                    div()
+                                .child({
+                                    let is_transitioning = self.proxy_status.contains("...");
+                                    let status_text = div()
                                         .text_base()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child(self.proxy_status.clone()),
-                                ),
+                                        .child(self.proxy_status.clone());
+                                    if is_transitioning {
+                                        status_text.with_animation(
+                                            "status-text-pulse",
+                                            Animation::new(std::time::Duration::from_millis(1200))
+                                                .repeat()
+                                                .with_easing(pulsating_between(0.4, 1.0)),
+                                            |el, delta| el.opacity(delta),
+                                        ).into_any_element()
+                                    } else {
+                                        status_text.into_any_element()
+                                    }
+                                }),
                         )
                         .child(
                             div()
@@ -1906,6 +1924,7 @@ impl AppState {
         } else {
             "Activate"
         };
+        let is_testing = self.latency_testing.contains(&index);
         let latency = node
             .latency_ms
             .map(|ms| {
@@ -2005,12 +2024,41 @@ impl AppState {
                 div().mx_2().child(protocol_tag),
             )
             .child(
-                // Latency
-                div()
-                    .w(px(64.0))
-                    .text_sm()
-                    .text_color(latency_color)
-                    .child(latency),
+                // Latency or testing indicator
+                if is_testing {
+                    div()
+                        .w(px(64.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .w(px(6.0))
+                                .h(px(6.0))
+                                .rounded_full()
+                                .bg(rgb(ACCENT))
+                                .with_animation(
+                                    SharedString::from(format!("lat-spin-{}", index)),
+                                    Animation::new(std::time::Duration::from_millis(800))
+                                        .repeat()
+                                        .with_easing(pulsating_between(0.2, 1.0)),
+                                    |el, delta| el.opacity(delta),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(TEXT_MUTED))
+                                .child("testing"),
+                        )
+                } else {
+                    div()
+                        .w(px(64.0))
+                        .text_sm()
+                        .text_color(latency_color)
+                        .child(latency)
+                },
             )
             .child({
                 let button = Button::new(("activate-node", index))
@@ -2110,7 +2158,8 @@ impl AppState {
                                     ),
                             )
                             .child(if !import_status.is_empty() {
-                                div()
+                                let is_importing = import_status.contains("Importing");
+                                let status_div = div()
                                     .text_sm()
                                     .text_color(if import_status.starts_with('✓') {
                                         rgb(SUCCESS_COLOR)
@@ -2119,8 +2168,18 @@ impl AppState {
                                     } else {
                                         rgb(TEXT_SECONDARY)
                                     })
-                                    .child(import_status)
-                                    .into_any_element()
+                                    .child(import_status);
+                                if is_importing {
+                                    status_div.with_animation(
+                                        "import-pulse",
+                                        Animation::new(std::time::Duration::from_millis(1000))
+                                            .repeat()
+                                            .with_easing(pulsating_between(0.3, 1.0)),
+                                        |el, delta| el.opacity(delta),
+                                    ).into_any_element()
+                                } else {
+                                    status_div.into_any_element()
+                                }
                             } else {
                                 div().into_any_element()
                             }),
