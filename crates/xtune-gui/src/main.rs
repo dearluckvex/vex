@@ -8,16 +8,30 @@ use gpui_component::*;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Best-effort cleanup: clear system proxy so the OS doesn't keep routing
-/// traffic to a dead local proxy after the app exits.
+/// Best-effort cleanup: clear system proxy and restore TUN routes so the OS
+/// doesn't keep routing traffic to a dead local proxy after the app exits.
 fn cleanup_on_exit() {
-    if let Err(e) = xtune_core::clear_system_proxy() {
-        // Only log if it was a real error (not "unsupported platform")
-        let msg = format!("{}", e);
-        if !msg.contains("not supported") {
-            eprintln!("cleanup: failed to clear system proxy: {}", e);
+    // 1. Clear system proxy (retry once on failure)
+    for attempt in 0..2 {
+        match xtune_core::clear_system_proxy() {
+            Ok(()) => break,
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("not supported") {
+                    break;
+                }
+                if attempt == 0 {
+                    // Brief pause before retry
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                } else {
+                    eprintln!("cleanup: failed to clear system proxy: {}", e);
+                }
+            }
         }
     }
+
+    // 2. Restore TUN routes if they were active
+    xtune_core::emergency_restore_routes();
 }
 
 fn main() {
@@ -55,6 +69,31 @@ fn main() {
             }
         });
     });
+
+    // On Windows, register SetConsoleCtrlHandler for CTRL_CLOSE_EVENT,
+    // CTRL_LOGOFF_EVENT, and CTRL_SHUTDOWN_EVENT. These are NOT caught
+    // by Ctrl+C handlers and would otherwise skip cleanup.
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> i32 {
+            // CTRL_CLOSE_EVENT=2, CTRL_LOGOFF_EVENT=5, CTRL_SHUTDOWN_EVENT=6
+            if ctrl_type == 2 || ctrl_type == 5 || ctrl_type == 6 {
+                // Run cleanup inline — we have ~5s before Windows kills us
+                cleanup_on_exit();
+                return 1; // handled
+            }
+            0 // not handled
+        }
+
+        extern "system" {
+            fn SetConsoleCtrlHandler(
+                handler: unsafe extern "system" fn(u32) -> i32,
+                add: i32,
+            ) -> i32;
+        }
+
+        unsafe { SetConsoleCtrlHandler(console_ctrl_handler, 1) };
+    }
 
     let app = Application::new();
 

@@ -62,6 +62,10 @@ async fn main() -> Result<()> {
     tracing::info!("Shutdown signal received");
     service.stop().await;
 
+    // Clean up system proxy and TUN routes
+    let _ = xtune_core::clear_system_proxy();
+    xtune_core::emergency_restore_routes();
+
     Ok(())
 }
 

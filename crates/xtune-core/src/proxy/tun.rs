@@ -13,6 +13,110 @@ use super::connector::SharedOutbound;
 use super::relay::relay_bidirectional;
 use crate::dns::DnsResolver;
 
+// ─── Global TUN exit state for emergency cleanup ───
+
+/// Saved state for emergency route restoration when the process exits.
+#[derive(Clone)]
+struct TunExitState {
+    orig_gateway: Ipv4Addr,
+    orig_iface: String,
+    bypass_ips: Vec<Ipv4Addr>,
+}
+
+static TUN_EXIT_STATE: std::sync::OnceLock<std::sync::Mutex<Option<TunExitState>>> =
+    std::sync::OnceLock::new();
+
+fn tun_exit_state() -> &'static std::sync::Mutex<Option<TunExitState>> {
+    TUN_EXIT_STATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn save_tun_exit_state(gateway: Ipv4Addr, iface: &str, bypass_ips: &[Ipv4Addr]) {
+    if let Ok(mut guard) = tun_exit_state().lock() {
+        *guard = Some(TunExitState {
+            orig_gateway: gateway,
+            orig_iface: iface.to_string(),
+            bypass_ips: bypass_ips.to_vec(),
+        });
+    }
+}
+
+fn clear_tun_exit_state() {
+    if let Ok(mut guard) = tun_exit_state().lock() {
+        *guard = None;
+    }
+}
+
+/// Emergency route restoration for use during process exit.
+///
+/// Reads the globally saved TUN state and restores the original default
+/// route. Uses synchronous `Command::output()` (no thread spawning) to
+/// ensure commands complete even during process teardown.
+pub fn emergency_restore_routes() {
+    let state = match tun_exit_state().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return,
+    };
+
+    let state = match state {
+        Some(s) => s,
+        None => return, // TUN was not active or already cleaned up
+    };
+
+    tracing::info!("Emergency: restoring routes (gateway={}, iface={})", state.orig_gateway, state.orig_iface);
+
+    #[cfg(target_os = "linux")]
+    {
+        let gw = state.orig_gateway.to_string();
+        let _ = run_cmd_sync("ip", &["route", "replace", "default", "via", &gw, "dev", &state.orig_iface]);
+        for ip in &state.bypass_ips {
+            let ip_route = format!("{}/32", ip);
+            let _ = run_cmd_sync("ip", &["route", "del", &ip_route]);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let gw = state.orig_gateway.to_string();
+        if run_cmd_sync("route", &["-n", "change", "default", &gw]).is_err() {
+            let _ = run_cmd_sync("route", &["-n", "delete", "default"]);
+            let _ = run_cmd_sync("route", &["-n", "add", "default", &gw]);
+        }
+        for ip in &state.bypass_ips {
+            let _ = run_cmd_sync("route", &["-n", "delete", "-host", &ip.to_string()]);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let gw = state.orig_gateway.to_string();
+        if run_cmd_sync("route", &["change", "0.0.0.0", "mask", "0.0.0.0", &gw, "metric", "5"]).is_err() {
+            let _ = run_cmd_sync("route", &["delete", "0.0.0.0"]);
+            let _ = run_cmd_sync("route", &["add", "0.0.0.0", "mask", "0.0.0.0", &gw, "metric", "5"]);
+        }
+        for ip in &state.bypass_ips {
+            let _ = run_cmd_sync("route", &["delete", &ip.to_string()]);
+        }
+    }
+
+    // Clear the saved state so we don't restore twice
+    clear_tun_exit_state();
+}
+
+/// Run a command synchronously without spawning a thread.
+/// Used during process exit when spawned threads may be killed by the OS.
+fn run_cmd_sync(cmd: &str, args: &[&str]) -> Result<String> {
+    let cmd_path = find_cmd(cmd).unwrap_or_else(|| cmd.to_string());
+    let output = std::process::Command::new(&cmd_path)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to run {} {}", cmd, args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("{} {} failed: {}", cmd, args.join(" "), stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// TUN device IP configuration.
 const TUN_IPV4: Ipv4Addr = Ipv4Addr::new(10, 10, 0, 2);
 const TUN_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 10, 0, 1);
@@ -368,6 +472,10 @@ pub fn setup_tun_routes(
 
     tracing::info!("Default route set to TUN device {}", route_info.tun_name);
 
+    // Save state globally so emergency_restore_routes() can recover even
+    // if the TunRouteGuard is never properly dropped (e.g., process killed).
+    save_tun_exit_state(orig_gateway, &orig_iface, &bypass_ips);
+
     Ok(TunRouteGuard {
         orig_gateway,
         orig_iface,
@@ -401,6 +509,9 @@ impl TunRouteGuard {
 
         #[cfg(target_os = "windows")]
         self.restore_windows();
+
+        // Clear global state so emergency_restore_routes() is a no-op
+        clear_tun_exit_state();
     }
 }
 

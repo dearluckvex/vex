@@ -144,22 +144,22 @@ where
         };
 
         // Accumulate transferred bytes from ready results
-        let a_ready = match a_to_b {
+        let a_transferred = match a_to_b {
             Poll::Ready(Ok(n)) => {
                 this.a_to_b += n;
-                true
+                n
             }
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => false,
+            Poll::Pending => 0,
         };
 
-        let b_ready = match b_to_a {
+        let b_transferred = match b_to_a {
             Poll::Ready(Ok(n)) => {
                 this.b_to_a += n;
-                true
+                n
             }
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => false,
+            Poll::Pending => 0,
         };
 
         // Both directions done
@@ -169,8 +169,9 @@ where
             return Poll::Ready(Ok((this.a_to_b, this.b_to_a)));
         }
 
-        // At least one direction made progress or is pending
-        if a_ready || b_ready {
+        // Only re-wake if actual data was transferred — avoids spin-looping
+        // when one direction is done but the other is waiting on I/O.
+        if a_transferred > 0 || b_transferred > 0 {
             cx.waker().wake_by_ref();
         }
 

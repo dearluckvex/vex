@@ -9,7 +9,7 @@ use super::connector::BoxProxyStream;
 /// Max age for pooled connections before they're considered stale.
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(55);
 /// Default pool capacity (pre-established connections to keep warm).
-const DEFAULT_CAPACITY: usize = 2;
+const DEFAULT_CAPACITY: usize = 4;
 
 /// A pre-established TCP+TLS connection waiting to be used.
 struct PooledConn {
@@ -34,6 +34,7 @@ struct PoolInner {
     capacity: usize,
     max_age: Duration,
     warmed: std::sync::atomic::AtomicBool,
+    filling: std::sync::atomic::AtomicBool,
 }
 
 /// Connection pool that maintains pre-established TCP+TLS connections
@@ -61,6 +62,7 @@ impl ConnPool {
                 capacity,
                 max_age: DEFAULT_MAX_AGE,
                 warmed: std::sync::atomic::AtomicBool::new(false),
+                filling: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -70,8 +72,7 @@ impl ConnPool {
     pub async fn get(&self) -> anyhow::Result<BoxProxyStream> {
         // Lazy warmup: start filling on first use
         if !self.inner.warmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            let p = self.clone();
-            tokio::spawn(async move { p.fill().await });
+            self.schedule_fill();
         }
 
         // Try to grab a non-stale connection from the pool
@@ -81,8 +82,7 @@ impl ConnPool {
                 if pc.created.elapsed() < self.inner.max_age {
                     drop(q);
                     // Got a warm connection — schedule refill
-                    let p = self.clone();
-                    tokio::spawn(async move { p.fill().await });
+                    self.schedule_fill();
                     return Ok(pc.stream);
                 }
                 // Stale — drop it and try next
@@ -92,7 +92,18 @@ impl ConnPool {
         self.inner.factory.create().await
     }
 
-    /// Fill the pool up to capacity.
+    /// Schedule a background fill only if no fill is already in progress.
+    fn schedule_fill(&self) {
+        if !self.inner.filling.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let p = self.clone();
+            tokio::spawn(async move {
+                p.fill().await;
+                p.inner.filling.store(false, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+    }
+
+    /// Fill the pool up to capacity. Only one fill runs at a time.
     async fn fill(&self) {
         // Small delay to avoid thundering herd during burst
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -104,8 +115,12 @@ impl ConnPool {
         }
 
         loop {
-            let current = self.inner.conns.lock().await.len();
-            if current >= self.inner.capacity {
+            // Check current size under lock, then release before creating
+            let needs_more = {
+                let q = self.inner.conns.lock().await;
+                q.len() < self.inner.capacity
+            };
+            if !needs_more {
                 break;
             }
             match self.inner.factory.create().await {

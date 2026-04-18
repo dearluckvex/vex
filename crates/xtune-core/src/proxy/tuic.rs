@@ -44,7 +44,7 @@ pub struct TuicOutbound {
     congestion: CongestionControl,
     /// Pre-built QUIC client config (avoids rebuilding root certs per reconnect)
     quic_client_config: quinn::ClientConfig,
-    state: tokio::sync::Mutex<Option<(quinn::Endpoint, quinn::Connection)>>,
+    state: tokio::sync::RwLock<Option<(quinn::Endpoint, quinn::Connection)>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,15 +98,25 @@ impl TuicOutbound {
             sni,
             congestion,
             quic_client_config,
-            state: tokio::sync::Mutex::new(None),
+            state: tokio::sync::RwLock::new(None),
         })
     }
 
     /// Get or create QUIC connection, authenticating on first connect.
     async fn get_connection(&self) -> Result<quinn::Connection> {
-        let mut guard = self.state.lock().await;
+        // Fast path: read lock to check/reuse existing connection
+        {
+            let guard = self.state.read().await;
+            if let Some((_, ref conn)) = *guard {
+                if conn.close_reason().is_none() {
+                    return Ok(conn.clone());
+                }
+            }
+        }
 
-        // Check if existing connection is still alive
+        // Slow path: write lock to create a new connection
+        let mut guard = self.state.write().await;
+        // Double-check after acquiring write lock
         if let Some((_, ref conn)) = *guard {
             if conn.close_reason().is_none() {
                 return Ok(conn.clone());

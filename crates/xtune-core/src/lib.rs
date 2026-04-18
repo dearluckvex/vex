@@ -29,8 +29,8 @@ pub use proxy::ss::SsOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::tuic::TuicOutbound;
 pub use proxy::tun::{
-    TunProxy, TunRouteGuard, TunRouteInfo, ensure_wintun_dll, resolve_to_ipv4, setup_tun_routes,
-    tun_requirements, tun_supported, wintun_dll_available,
+    TunProxy, TunRouteGuard, TunRouteInfo, emergency_restore_routes, ensure_wintun_dll,
+    resolve_to_ipv4, setup_tun_routes, tun_requirements, tun_supported, wintun_dll_available,
 };
 pub use proxy::vless::VlessOutbound;
 pub use proxy::vmess::VMessOutbound;

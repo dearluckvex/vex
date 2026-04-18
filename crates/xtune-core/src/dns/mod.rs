@@ -69,7 +69,11 @@ pub enum DnsServer {
 struct CacheEntry {
     addresses: Vec<IpAddr>,
     expires_at: Instant,
+    last_used: Instant,
 }
+
+/// Maximum number of entries in the DNS cache before LRU eviction.
+const DNS_CACHE_MAX_ENTRIES: usize = 1024;
 
 /// In-flight DNS query entry for deduplication.
 type InflightEntry = Arc<tokio::sync::OnceCell<Result<Vec<IpAddr>, String>>>;
@@ -114,11 +118,35 @@ impl DnsResolver {
 
         // Check cache
         if self.config.cache_enabled {
-            let cache = self.cache.read().await;
-            if let Some(entry) = cache.get(domain) {
-                if entry.expires_at > Instant::now() {
+            let now = Instant::now();
+            let mut cache = self.cache.write().await;
+            if let Some(entry) = cache.get_mut(domain) {
+                entry.last_used = now;
+                if entry.expires_at > now {
                     return Ok(entry.addresses.clone());
                 }
+                // Stale-while-revalidate: return stale result and refresh in background.
+                // Only serve stale data up to 5 minutes past expiry.
+                let stale_limit = Duration::from_secs(300);
+                if now.duration_since(entry.expires_at) < stale_limit {
+                    let stale_addrs = entry.addresses.clone();
+                    let domain_owned = domain.to_string();
+                    let cache_ref = self.cache.clone();
+                    let config = self.config.clone();
+                    let doh_client = self.doh_client.clone();
+                    tokio::spawn(async move {
+                        // Create a temporary resolver-like context for background refresh
+                        let resolver = DnsResolver {
+                            config,
+                            cache: cache_ref,
+                            doh_client,
+                            inflight: Mutex::new(HashMap::new()),
+                        };
+                        let _ = resolver.resolve_uncached(&domain_owned).await;
+                    });
+                    return Ok(stale_addrs);
+                }
+                // Too stale — fall through to fresh resolution
             }
         }
 
@@ -174,11 +202,28 @@ impl DnsResolver {
                             300 // default 5 minutes
                         };
                         let mut cache = self.cache.write().await;
+
+                        // Evict expired entries first
+                        let now = Instant::now();
+                        cache.retain(|_, e| e.expires_at > now);
+
+                        // If still over limit, evict least-recently-used
+                        if cache.len() >= DNS_CACHE_MAX_ENTRIES {
+                            if let Some(lru_key) = cache
+                                .iter()
+                                .min_by_key(|(_, e)| e.last_used)
+                                .map(|(k, _)| k.clone())
+                            {
+                                cache.remove(&lru_key);
+                            }
+                        }
+
                         cache.insert(
                             domain.to_string(),
                             CacheEntry {
                                 addresses: addrs.clone(),
-                                expires_at: Instant::now() + Duration::from_secs(ttl as u64),
+                                expires_at: now + Duration::from_secs(ttl as u64),
+                                last_used: now,
                             },
                         );
                     }
