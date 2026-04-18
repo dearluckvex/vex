@@ -1247,6 +1247,7 @@ impl AppState {
             .rounded_lg()
             .bg(bg)
             .cursor_pointer()
+            .hover(|s| s.bg(rgb(BG_ACCENT_SUBTLE)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_view(view.clone(), cx);
             }))
@@ -1557,7 +1558,14 @@ impl AppState {
                                         .w(px(10.0))
                                         .h(px(10.0))
                                         .rounded_full()
-                                        .bg(status_color),
+                                        .bg(status_color)
+                                        .with_animation(
+                                            "status-pulse",
+                                            Animation::new(std::time::Duration::from_secs(2))
+                                                .repeat()
+                                                .with_easing(pulsating_between(0.5, 1.0)),
+                                            move |el, delta| el.opacity(delta),
+                                        ),
                                 )
                                 .child(
                                     div()
@@ -1682,6 +1690,7 @@ impl AppState {
             .border_1()
             .border_color(rgb(BORDER_COLOR))
             .shadow_md()
+            .hover(|s| s.bg(rgb(BG_CARD_HOVER)).border_color(rgb(ACCENT_DIM)))
     }
 
     /// Section title inside a card (e.g. "Proxy Mode", "System Proxy").
@@ -1957,6 +1966,7 @@ impl AppState {
             .border_color(border)
             .shadow_sm()
             .cursor_pointer()
+            .hover(|s| s.bg(rgb(BG_CARD_HOVER)).border_color(rgb(ACCENT_DIM)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_node(index, cx);
             }))
@@ -2689,6 +2699,7 @@ impl AppState {
             .border_1()
             .border_color(rgb(BORDER_COLOR))
             .shadow_sm()
+            .hover(|s| s.bg(rgb(BG_CARD_HOVER)).border_color(rgb(ACCENT_DIM)))
             .child(
                 div()
                     .w(px(20.0))
@@ -2859,7 +2870,7 @@ impl AppState {
                 .border_1()
                 .border_color(rgb(BORDER_COLOR));
 
-            for entry in entries.iter().take(200) {
+            for (log_idx, entry) in entries.iter().take(200).enumerate() {
                 let (level_label, level_color) = match entry.level {
                     tracing::Level::ERROR => ("ERR", DANGER_COLOR),
                     tracing::Level::WARN => ("WRN", WARNING_COLOR),
@@ -2878,11 +2889,14 @@ impl AppState {
 
                 list = list.child(
                     div()
+                        .id(SharedString::from(format!("log-{}", log_idx)))
                         .flex()
                         .flex_row()
                         .gap_2()
                         .px_2()
                         .py_0p5()
+                        .rounded(px(4.0))
+                        .hover(|s| s.bg(rgb(BG_CARD)))
                         .child(
                             div()
                                 .w(px(30.0))
