@@ -100,6 +100,18 @@ fn main() {
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        // Register keyboard shortcuts
+        cx.bind_keys([
+            KeyBinding::new("ctrl-shift-c", app::ToggleProxy, None),
+            KeyBinding::new("ctrl-1", app::SwitchToHome, None),
+            KeyBinding::new("ctrl-2", app::SwitchToNodes, None),
+            KeyBinding::new("ctrl-3", app::SwitchToConfig, None),
+            KeyBinding::new("ctrl-4", app::SwitchToRules, None),
+            KeyBinding::new("ctrl-5", app::SwitchToLogs, None),
+            KeyBinding::new("ctrl-6", app::SwitchToSettings, None),
+            KeyBinding::new("ctrl-t", app::TestAllLatency, None),
+        ]);
+
         let handle = tokio_handle.clone();
         let buf = log_buf.clone();
         cx.spawn(async move |cx| {

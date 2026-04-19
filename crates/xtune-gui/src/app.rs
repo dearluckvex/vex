@@ -6,6 +6,21 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::log_buffer::SharedLogBuffer;
+
+// Keyboard shortcut actions
+actions!(
+    xtune,
+    [
+        ToggleProxy,
+        SwitchToHome,
+        SwitchToNodes,
+        SwitchToConfig,
+        SwitchToRules,
+        SwitchToLogs,
+        SwitchToSettings,
+        TestAllLatency,
+    ]
+);
 use xtune_core::config::model::{
     AppConfig, Node, ProxyProtocol, RoutingRule, Subscription, TransportConfig, TransportType,
 };
@@ -1110,12 +1125,38 @@ impl AppState {
 impl Render for AppState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .id("app-root")
+            .key_context("AppState")
             .size_full()
             .flex()
             .flex_row()
             .bg(rgb(BG_PRIMARY))
             .font(ui_font())
             .text_color(rgb(TEXT_PRIMARY))
+            .on_action(cx.listener(|this, _: &ToggleProxy, _, cx| {
+                this.toggle_proxy(cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToHome, _, cx| {
+                this.set_view(ActiveView::Home, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToNodes, _, cx| {
+                this.set_view(ActiveView::Nodes, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToConfig, _, cx| {
+                this.set_view(ActiveView::Config, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToRules, _, cx| {
+                this.set_view(ActiveView::Rules, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToLogs, _, cx| {
+                this.set_view(ActiveView::Logs, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSettings, _, cx| {
+                this.set_view(ActiveView::Settings, cx);
+            }))
+            .on_action(cx.listener(|this, _: &TestAllLatency, _, cx| {
+                this.test_all_latency(cx);
+            }))
             .child(self.render_sidebar(cx))
             .child(self.render_content(cx))
     }
@@ -1186,18 +1227,19 @@ impl AppState {
                             .gap_0p5()
                             .px_3()
                             .mt_2()
-                            .child(self.nav_item("Home", "🏠", ActiveView::Home, &active, cx))
-                            .child(self.nav_item("Nodes", "📡", ActiveView::Nodes, &active, cx))
-                            .child(self.nav_item("Config", "⬇️", ActiveView::Config, &active, cx))
-                            .child(self.nav_item("Rules", "📋", ActiveView::Rules, &active, cx))
+                            .child(self.nav_item("Home", "🏠", "Ctrl+1", ActiveView::Home, &active, cx))
+                            .child(self.nav_item("Nodes", "📡", "Ctrl+2", ActiveView::Nodes, &active, cx))
+                            .child(self.nav_item("Config", "⬇️", "Ctrl+3", ActiveView::Config, &active, cx))
+                            .child(self.nav_item("Rules", "📋", "Ctrl+4", ActiveView::Rules, &active, cx))
                             .child(self.nav_item(
                                 "Settings",
                                 "⚙️",
+                                "Ctrl+6",
                                 ActiveView::Settings,
                                 &active,
                                 cx,
                             ))
-                            .child(self.nav_item("Logs", "📜", ActiveView::Logs, &active, cx)),
+                            .child(self.nav_item("Logs", "📜", "Ctrl+5", ActiveView::Logs, &active, cx)),
                     ),
             )
             .child(
@@ -1220,6 +1262,7 @@ impl AppState {
         &mut self,
         label: &str,
         icon: &str,
+        shortcut: &str,
         view: ActiveView,
         active: &ActiveView,
         cx: &mut Context<Self>,
@@ -1242,6 +1285,7 @@ impl AppState {
             rgb(BG_SIDEBAR)
         };
 
+        let tooltip_text = SharedString::from(format!("{} ({})", label, shortcut));
         div()
             .id(SharedString::from(format!("nav-{}", label)))
             .flex()
@@ -1254,6 +1298,9 @@ impl AppState {
             .bg(bg)
             .cursor_pointer()
             .hover(|s| s.bg(rgb(BG_ACCENT_SUBTLE)))
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tooltip_text.clone()).build(window, cx)
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_view(view.clone(), cx);
             }))
@@ -1616,8 +1663,11 @@ impl AppState {
                                 )),
                         )
                         .child({
+                            let is_connecting = self.proxy_status.contains("...");
                             let connect_btn = Button::new("connect-btn")
                                 .label(btn_label.to_string())
+                                .tooltip("Toggle proxy connection (Ctrl+Shift+C)")
+                                .loading(is_connecting)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.toggle_proxy(cx);
                                 }));
@@ -1842,6 +1892,7 @@ impl AppState {
                             .child(
                                 Button::new("sort-latency-btn")
                                     .label("📊 Sort by Latency".to_string())
+                                    .tooltip("Sort nodes by latency (fastest first)")
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.sort_nodes_by_latency(cx);
@@ -1850,7 +1901,9 @@ impl AppState {
                             .child(
                                 Button::new("test-all-btn")
                                     .label("⚡ Test All".to_string())
+                                    .tooltip("Test latency for all nodes (Ctrl+T)")
                                     .primary()
+                                    .loading(!self.latency_testing.is_empty())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.test_all_latency(cx);
                                     })),
@@ -1858,6 +1911,7 @@ impl AppState {
                             .child(
                                 Button::new("delete-all-btn")
                                     .label("🗑 Delete All".to_string())
+                                    .tooltip("Delete all nodes")
                                     .danger()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.delete_all_nodes(cx);
@@ -2143,7 +2197,9 @@ impl AppState {
                                     .child(
                                         Button::new("import-btn")
                                             .label("⬇ Import".to_string())
+                                            .tooltip("Fetch nodes from subscription URL")
                                             .primary()
+                                            .loading(self.import_status.contains("Importing"))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.import_subscription(cx);
                                             })),
@@ -2151,6 +2207,7 @@ impl AppState {
                                     .child(
                                         Button::new("clear-btn")
                                             .label("🗑 Clear Nodes".to_string())
+                                            .tooltip("Remove all imported nodes")
                                             .ghost()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.clear_nodes(cx);
@@ -3025,6 +3082,7 @@ impl AppState {
                             .child(
                                 Button::new("apply-settings")
                                     .label("💾 Apply Settings".to_string())
+                                    .tooltip("Save and apply proxy settings")
                                     .primary()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.apply_settings(cx);
