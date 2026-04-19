@@ -1445,6 +1445,7 @@ impl AppState {
                             .child({
                                 let btn = Button::new("mode-global")
                                     .label("🌐 Global".to_string())
+                                    .tooltip("Route all traffic through proxy")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_proxy_mode(ProxyMode::Global, cx);
                                     }));
@@ -1457,6 +1458,7 @@ impl AppState {
                             .child({
                                 let btn = Button::new("mode-rule")
                                     .label("🇨🇳 Rule".to_string())
+                                    .tooltip("Route traffic based on rules (e.g. China direct)")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_proxy_mode(ProxyMode::Rule, cx);
                                     }));
@@ -1469,6 +1471,7 @@ impl AppState {
                             .child({
                                 let btn = Button::new("mode-direct")
                                     .label("⚡ Direct".to_string())
+                                    .tooltip("Bypass proxy, connect directly")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_proxy_mode(ProxyMode::Direct, cx);
                                     }));
@@ -1511,6 +1514,7 @@ impl AppState {
                                 if self.system_proxy_enabled {
                                     Button::new("sys-proxy-toggle")
                                         .label("🟢 Enabled — Click to Disable".to_string())
+                                        .tooltip("Disable system-wide proxy settings")
                                         .primary()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.disable_system_proxy(cx);
@@ -1518,6 +1522,7 @@ impl AppState {
                                 } else {
                                     Button::new("sys-proxy-toggle")
                                         .label("⭕ Disabled — Click to Enable".to_string())
+                                        .tooltip("Enable system-wide proxy settings")
                                         .ghost()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.enable_system_proxy(cx);
@@ -1547,6 +1552,7 @@ impl AppState {
                                 if self.tun_enabled {
                                     Button::new("tun-toggle")
                                         .label("🟢 Disable TUN".to_string())
+                                        .tooltip("Stop TUN virtual network interface")
                                         .primary()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.stop_tun(cx);
@@ -1554,6 +1560,7 @@ impl AppState {
                                 } else if tun_supported() {
                                     Button::new("tun-toggle")
                                         .label("⭕ Enable TUN".to_string())
+                                        .tooltip("Start TUN virtual network interface for system-wide proxying")
                                         .ghost()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.start_tun(cx);
@@ -1561,6 +1568,7 @@ impl AppState {
                                 } else {
                                     Button::new("tun-toggle")
                                         .label("⛔ TUN not supported on this platform".to_string())
+                                        .tooltip("TUN mode requires administrator privileges and platform support")
                                         .ghost()
                                 }
                             }),
@@ -1712,6 +1720,7 @@ impl AppState {
                             .child(
                                 Button::new("refresh-stats")
                                     .label("↻ Refresh".to_string())
+                                    .tooltip("Refresh connection statistics")
                                     .ghost()
                                     .on_click(cx.listener(|_this, _, _, cx| {
                                         cx.notify();
@@ -2115,8 +2124,10 @@ impl AppState {
                 },
             )
             .child({
+                let activate_tooltip = if is_active { "Currently active node" } else { "Switch to this node" };
                 let button = Button::new(("activate-node", index))
                     .label(action_label.to_string())
+                    .tooltip(activate_tooltip)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.activate_node(index, cx);
                     }));
@@ -2129,6 +2140,7 @@ impl AppState {
             .child(
                 Button::new(("delete-node", index))
                     .label("✕".to_string())
+                    .tooltip("Remove this node")
                     .ghost()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.delete_node(index, cx);
@@ -2263,6 +2275,7 @@ impl AppState {
                                     .child(
                                         Button::new("add-uri-btn")
                                             .label("+ Add Node".to_string())
+                                            .tooltip("Parse and add node from URI")
                                             .primary()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.add_node_from_uri(cx);
@@ -2618,6 +2631,7 @@ impl AppState {
                             .child(
                                 Button::new("load-china-rules")
                                     .label("🇨🇳 Load China Direct".to_string())
+                                    .tooltip("Load built-in rules to bypass proxy for Chinese sites")
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.load_china_rules(cx);
@@ -2626,6 +2640,7 @@ impl AppState {
                             .child(
                                 Button::new("clear-rules")
                                     .label("🗑 Clear All".to_string())
+                                    .tooltip("Remove all routing rules")
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.clear_rules(cx);
@@ -2693,6 +2708,11 @@ impl AppState {
                                             } else {
                                                 "+ Add Rule".to_string()
                                             })
+                                            .tooltip(if self.editing_rule_index.is_some() {
+                                                "Save changes to rule"
+                                            } else {
+                                                "Add a new routing rule"
+                                            })
                                             .primary()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.add_rule(cx);
@@ -2702,6 +2722,7 @@ impl AppState {
                                         Some(
                                             Button::new("cancel-edit-btn")
                                                 .label("Cancel".to_string())
+                                                .tooltip("Discard changes and stop editing")
                                                 .ghost()
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.cancel_edit_rule(cx);
@@ -2847,6 +2868,7 @@ impl AppState {
                     .child(
                         Button::new(("rule-up", index))
                             .label("▲".to_string())
+                            .tooltip("Move rule up (higher priority)")
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.move_rule_up(index, cx);
@@ -2855,6 +2877,7 @@ impl AppState {
                     .child(
                         Button::new(("rule-down", index))
                             .label("▼".to_string())
+                            .tooltip("Move rule down (lower priority)")
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.move_rule_down(index, cx);
@@ -2863,6 +2886,7 @@ impl AppState {
                     .child(
                         Button::new(("rule-edit", index))
                             .label("✎".to_string())
+                            .tooltip("Edit this rule")
                             .ghost()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.start_edit_rule(index, window, cx);
@@ -2871,6 +2895,7 @@ impl AppState {
                     .child(
                         Button::new(("rule-del", index))
                             .label("✕".to_string())
+                            .tooltip("Delete this rule")
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.delete_rule(index, cx);
@@ -2933,6 +2958,7 @@ impl AppState {
                             .child(
                                 Button::new("refresh-logs")
                                     .label("🔄 Refresh".to_string())
+                                    .tooltip("Refresh log display")
                                     .ghost()
                                     .on_click(cx.listener(|_this, _, _, cx| {
                                         cx.notify();
@@ -2941,6 +2967,7 @@ impl AppState {
                             .child(
                                 Button::new("clear-logs")
                                     .label("🗑 Clear".to_string())
+                                    .tooltip("Clear all log entries")
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if let Ok(mut buf) = this.log_buffer.lock() {
@@ -3113,6 +3140,7 @@ impl AppState {
                                             } else {
                                                 "🌐 Set System Proxy".to_string()
                                             })
+                                            .tooltip("Configure OS to use xtune as system proxy")
                                             .primary()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.enable_system_proxy(cx);
@@ -3121,6 +3149,7 @@ impl AppState {
                                     .child(
                                         Button::new("disable-system-proxy")
                                             .label("🧹 Clear System Proxy".to_string())
+                                            .tooltip("Remove xtune from OS proxy settings")
                                             .ghost()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.disable_system_proxy(cx);
