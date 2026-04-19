@@ -85,7 +85,7 @@ fn main() {
             0 // not handled
         }
 
-        extern "system" {
+        unsafe extern "system" {
             fn SetConsoleCtrlHandler(
                 handler: unsafe extern "system" fn(u32) -> i32,
                 add: i32,
