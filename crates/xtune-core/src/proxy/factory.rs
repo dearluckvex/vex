@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::config::model::{Node, ProxyProtocol};
 
-use super::connector::{DirectOutbound, SharedOutbound};
+use super::connector::SharedOutbound;
 use super::hysteria2::Hysteria2Outbound;
 use super::ss::{SsOutbound, normalize_ss_cipher};
 use super::trojan::TrojanOutbound;
@@ -12,38 +12,44 @@ use super::tuic::TuicOutbound;
 use super::vless::VlessOutbound;
 use super::vmess::VMessOutbound;
 
+/// Number of retry attempts for transient connection failures.
+const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
+
 /// Create an outbound connector from a Node configuration.
+///
+/// All outbounds are automatically wrapped with retry logic to handle
+/// transient failures (brief network blips, server overload) that
+/// self-resolve on retry.
 pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
-    match &node.protocol {
+    let outbound = match &node.protocol {
         ProxyProtocol::VLess { uuid, .. } => {
-            let outbound =
-                VlessOutbound::new(&node.server, node.port, uuid, node.transport.as_ref())?;
-            Ok(SharedOutbound(Arc::new(outbound)))
+            let out = VlessOutbound::new(&node.server, node.port, uuid, node.transport.as_ref())?;
+            SharedOutbound(Arc::new(out))
         }
 
         ProxyProtocol::Trojan { password, .. } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
-            let outbound = TrojanOutbound::new(&node.server, node.port, password, tls_config);
-            Ok(SharedOutbound(Arc::new(outbound)))
+            let out = TrojanOutbound::new(&node.server, node.port, password, tls_config);
+            SharedOutbound(Arc::new(out))
         }
 
         ProxyProtocol::Shadowsocks {
             cipher, password, ..
         } => {
             let normalized_cipher = normalize_ss_cipher(cipher);
-            let outbound = SsOutbound::new(&node.server, node.port, normalized_cipher, password)?;
-            Ok(SharedOutbound(Arc::new(outbound)))
+            let out = SsOutbound::new(&node.server, node.port, normalized_cipher, password)?;
+            SharedOutbound(Arc::new(out))
         }
 
         ProxyProtocol::VMess { uuid, cipher, .. } => {
-            let outbound = VMessOutbound::new(
+            let out = VMessOutbound::new(
                 &node.server,
                 node.port,
                 uuid,
                 cipher,
                 node.transport.as_ref(),
             )?;
-            Ok(SharedOutbound(Arc::new(outbound)))
+            SharedOutbound(Arc::new(out))
         }
 
         ProxyProtocol::Tuic {
@@ -53,7 +59,7 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
             ..
         } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
-            let outbound = TuicOutbound::new(
+            let out = TuicOutbound::new(
                 &node.server,
                 node.port,
                 uuid,
@@ -61,15 +67,17 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
                 congestion_control,
                 tls_config,
             )?;
-            Ok(SharedOutbound(Arc::new(outbound)))
+            SharedOutbound(Arc::new(out))
         }
 
         ProxyProtocol::Hysteria2 { password, .. } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
-            let outbound = Hysteria2Outbound::new(&node.server, node.port, password, tls_config)?;
-            Ok(SharedOutbound(Arc::new(outbound)))
+            let out = Hysteria2Outbound::new(&node.server, node.port, password, tls_config)?;
+            SharedOutbound(Arc::new(out))
         }
-    }
+    };
+
+    Ok(outbound.with_retry(DEFAULT_RETRY_ATTEMPTS))
 }
 
 #[cfg(test)]

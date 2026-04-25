@@ -78,13 +78,12 @@ pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Resu
         if msg.contains("denied") || msg.contains("permission") || msg.contains("access") {
             anyhow::anyhow!(
                 "failed to set system proxy ({}:{}) — {}\nTry running as Administrator.",
-                host, port, e
+                host,
+                port,
+                e
             )
         } else {
-            anyhow::anyhow!(
-                "failed to set system proxy ({}:{}) — {}",
-                host, port, e
-            )
+            anyhow::anyhow!("failed to set system proxy ({}:{}) — {}", host, port, e)
         }
     })
 }

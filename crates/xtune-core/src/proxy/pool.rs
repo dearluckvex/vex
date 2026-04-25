@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use super::connector::BoxProxyStream;
 
 /// Max age for pooled connections before they're considered stale.
-const DEFAULT_MAX_AGE: Duration = Duration::from_secs(55);
+const DEFAULT_MAX_AGE: Duration = Duration::from_secs(30);
 /// Default pool capacity (pre-established connections to keep warm).
 const DEFAULT_CAPACITY: usize = 4;
 
@@ -71,7 +71,11 @@ impl ConnPool {
     /// On first call, kicks off background pool warmup.
     pub async fn get(&self) -> anyhow::Result<BoxProxyStream> {
         // Lazy warmup: start filling on first use
-        if !self.inner.warmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .inner
+            .warmed
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             self.schedule_fill();
         }
 
@@ -94,11 +98,17 @@ impl ConnPool {
 
     /// Schedule a background fill only if no fill is already in progress.
     fn schedule_fill(&self) {
-        if !self.inner.filling.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .inner
+            .filling
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             let p = self.clone();
             tokio::spawn(async move {
                 p.fill().await;
-                p.inner.filling.store(false, std::sync::atomic::Ordering::Relaxed);
+                p.inner
+                    .filling
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
             });
         }
     }

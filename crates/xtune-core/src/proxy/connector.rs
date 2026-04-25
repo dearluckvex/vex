@@ -41,23 +41,21 @@ impl Outbound for DirectOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let addr = format!("{}:{}", host, port);
         Box::pin(async move {
-            let stream =
-                tokio::time::timeout(DIRECT_CONNECT_TIMEOUT, TcpStream::connect(&addr))
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "Direct connection to {} timed out after {}s",
-                            addr,
-                            DIRECT_CONNECT_TIMEOUT.as_secs()
-                        )
-                    })?
-                    .with_context(|| format!("Direct connection to {} failed", addr))?;
+            let stream = tokio::time::timeout(DIRECT_CONNECT_TIMEOUT, TcpStream::connect(&addr))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Direct connection to {} timed out after {}s",
+                        addr,
+                        DIRECT_CONNECT_TIMEOUT.as_secs()
+                    )
+                })?
+                .with_context(|| format!("Direct connection to {} failed", addr))?;
             stream.set_nodelay(true).ok();
             let sock = SockRef::from(&stream);
             sock.set_send_buffer_size(256 * 1024).ok();
             sock.set_recv_buffer_size(256 * 1024).ok();
-            let keepalive = TcpKeepalive::new()
-                .with_time(Duration::from_secs(30));
+            let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
             sock.set_tcp_keepalive(&keepalive).ok();
             Ok(Box::new(stream) as BoxProxyStream)
         })
@@ -68,6 +66,78 @@ impl Outbound for DirectOutbound {
     }
 }
 
+/// Outbound wrapper that retries failed connections with exponential backoff.
+///
+/// Handles transient failures (brief network blips, momentary server overload)
+/// that self-resolve on retry. Default: up to 3 attempts, 200 ms → 2 s delay.
+pub struct RetryOutbound {
+    inner: Arc<dyn Outbound>,
+    max_attempts: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+}
+
+impl RetryOutbound {
+    pub fn new(inner: Arc<dyn Outbound>) -> Self {
+        Self {
+            inner,
+            max_attempts: 3,
+            base_delay_ms: 200,
+            max_delay_ms: 2000,
+        }
+    }
+}
+
+impl Outbound for RetryOutbound {
+    fn connect(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
+        let host = host.to_owned();
+        Box::pin(async move {
+            let mut last_err = None;
+            let mut delay_ms = self.base_delay_ms;
+            for attempt in 0..self.max_attempts {
+                match self.inner.connect(&host, port).await {
+                    Ok(stream) => {
+                        if attempt > 0 {
+                            tracing::debug!(
+                                "{}:{} connected on attempt {}/{}",
+                                host,
+                                port,
+                                attempt + 1,
+                                self.max_attempts
+                            );
+                        }
+                        return Ok(stream);
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "{}:{} attempt {}/{} failed: {:#}",
+                            host,
+                            port,
+                            attempt + 1,
+                            self.max_attempts,
+                            e
+                        );
+                        last_err = Some(e);
+                        if attempt + 1 < self.max_attempts {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            delay_ms = (delay_ms * 2).min(self.max_delay_ms);
+                        }
+                    }
+                }
+            }
+            Err(last_err.unwrap())
+        })
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+}
+
 /// Wraps an `Arc<dyn Outbound>` for convenience cloning.
 #[derive(Clone)]
 pub struct SharedOutbound(pub Arc<dyn Outbound>);
@@ -75,6 +145,16 @@ pub struct SharedOutbound(pub Arc<dyn Outbound>);
 impl SharedOutbound {
     pub fn direct() -> Self {
         Self(Arc::new(DirectOutbound))
+    }
+
+    /// Wrap this outbound with automatic retry on transient failures.
+    pub fn with_retry(self, max_attempts: u32) -> Self {
+        Self(Arc::new(RetryOutbound {
+            inner: self.0,
+            max_attempts,
+            base_delay_ms: 200,
+            max_delay_ms: 2000,
+        }))
     }
 
     pub async fn connect(&self, host: &str, port: u16) -> Result<BoxProxyStream> {

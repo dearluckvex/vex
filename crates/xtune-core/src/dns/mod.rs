@@ -175,9 +175,7 @@ impl DnsResolver {
             inflight.remove(domain);
         }
 
-        result
-            .clone()
-            .map_err(|e| anyhow::anyhow!("{}", e))
+        result.clone().map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// Perform the actual DNS resolution (post-cache, no dedup).

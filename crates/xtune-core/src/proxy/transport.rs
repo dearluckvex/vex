@@ -2,14 +2,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
+use craft_tls::TlsConnector;
+use craft_tls::client::TlsStream;
 use craft_tls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
-use craft_tls::rustls::{
-    ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme,
-};
-use craft_tls::TlsConnector;
-use craft_tls::client::TlsStream;
+use craft_tls::rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
@@ -35,9 +33,7 @@ fn get_root_cert_store() -> &'static craft_tls::rustls::RootCertStore {
 }
 
 /// Map a fingerprint name from config to a craftls FingerprintBuilder.
-fn fingerprint_builder(
-    name: Option<&str>,
-) -> craft_tls::rustls::craft::FingerprintBuilder {
+fn fingerprint_builder(name: Option<&str>) -> craft_tls::rustls::craft::FingerprintBuilder {
     use craft_tls::rustls::craft::*;
     match name.map(|s| s.to_lowercase()).as_deref() {
         Some("chrome") | None => CHROME_112.builder(),
@@ -56,8 +52,7 @@ fn tune_socket(stream: &TcpStream) {
     let sock = SockRef::from(stream);
     sock.set_send_buffer_size(SOCKET_BUF_SIZE).ok();
     sock.set_recv_buffer_size(SOCKET_BUF_SIZE).ok();
-    let keepalive = TcpKeepalive::new()
-        .with_time(Duration::from_secs(TCP_KEEPALIVE_SECS));
+    let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(TCP_KEEPALIVE_SECS));
     sock.set_tcp_keepalive(&keepalive).ok();
 }
 

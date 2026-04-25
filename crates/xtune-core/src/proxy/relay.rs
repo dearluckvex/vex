@@ -81,10 +81,7 @@ where
         if buf.pos < buf.cap {
             let n = ready!(Pin::new(&mut *writer).poll_write(cx, &buf.buf[buf.pos..buf.cap]))?;
             if n == 0 {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "write zero",
-                )));
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::WriteZero, "write zero")));
             }
             buf.pos += n;
             transferred += n as u64;
@@ -143,36 +140,24 @@ where
             Poll::Ready(Ok(0))
         };
 
-        // Accumulate transferred bytes from ready results
-        let a_transferred = match a_to_b {
-            Poll::Ready(Ok(n)) => {
-                this.a_to_b += n;
-                n
-            }
+        // Accumulate transferred bytes from ready results; propagate errors immediately.
+        match a_to_b {
+            Poll::Ready(Ok(n)) => this.a_to_b += n,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => 0,
-        };
+            Poll::Pending => {}
+        }
 
-        let b_transferred = match b_to_a {
-            Poll::Ready(Ok(n)) => {
-                this.b_to_a += n;
-                n
-            }
+        match b_to_a {
+            Poll::Ready(Ok(n)) => this.b_to_a += n,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => 0,
-        };
+            Poll::Pending => {}
+        }
 
         // Both directions done
         if (this.a_done && this.a_buf.pos >= this.a_buf.cap)
             && (this.b_done && this.b_buf.pos >= this.b_buf.cap)
         {
             return Poll::Ready(Ok((this.a_to_b, this.b_to_a)));
-        }
-
-        // Only re-wake if actual data was transferred — avoids spin-looping
-        // when one direction is done but the other is waiting on I/O.
-        if a_transferred > 0 || b_transferred > 0 {
-            cx.waker().wake_by_ref();
         }
 
         Poll::Pending

@@ -119,16 +119,10 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
                 )
                 .await;
             let mut buf = [0u8; 128];
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), s.read(&mut buf)).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read(&mut buf)).await;
         }
         Ok(Err(e)) => return Err(anyhow::anyhow!("connection failed: {:#}", e)),
-        Err(_) => {
-            return Err(anyhow::anyhow!(
-                "connection timed out ({}s)",
-                timeout_secs
-            ))
-        }
+        Err(_) => return Err(anyhow::anyhow!("connection timed out ({}s)", timeout_secs)),
     }
 
     // Phase 2: Measure — connect again using cached/warm connections

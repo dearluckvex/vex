@@ -28,6 +28,9 @@ const CMD_PACKET: u8 = 0x02;
 const CMD_DISSOCIATE: u8 = 0x03;
 #[allow(dead_code)]
 const CMD_HEARTBEAT: u8 = 0x04;
+const TUIC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(7);
+const TUIC_CONNECT_ATTEMPTS_PER_ADDR: usize = 2;
+const TUIC_CONNECT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
 
 // Address types
 const ADDR_TYPE_DOMAIN: u8 = 0x00;
@@ -172,39 +175,71 @@ impl TuicOutbound {
         ));
         client_config.transport_config(Arc::new(transport));
 
-        // Resolve server address — prefer IPv4 to match the binding address
-        let addr = resolve_server(&self.server, self.port).await?;
-        tracing::debug!("TUIC resolved {}:{} -> {}", self.server, self.port, addr);
+        let addrs = resolve_server_addrs(&self.server, self.port).await?;
+        tracing::debug!("TUIC resolved {}:{} -> {:?}", self.server, self.port, addrs);
 
-        // Bind to matching address family (IPv4 or IPv6)
-        let bind_addr: SocketAddr = if addr.is_ipv4() {
-            "0.0.0.0:0".parse()?
-        } else {
-            "[::]:0".parse()?
-        };
-        let mut endpoint = quinn::Endpoint::client(bind_addr)?;
-        endpoint.set_default_client_config(client_config);
+        let mut last_err = None;
 
-        // Connect with timeout
-        let connecting = endpoint.connect(addr, &self.sni)?;
-        let connection = tokio::time::timeout(std::time::Duration::from_secs(15), connecting)
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "TUIC QUIC connection to {}:{} timed out (UDP may be blocked by firewall)",
-                    self.server,
-                    self.port
-                )
-            })??;
+        for addr in addrs {
+            for attempt in 1..=TUIC_CONNECT_ATTEMPTS_PER_ADDR {
+                let bind_addr: SocketAddr = if addr.is_ipv4() {
+                    "0.0.0.0:0".parse()?
+                } else {
+                    "[::]:0".parse()?
+                };
+                let mut endpoint = quinn::Endpoint::client(bind_addr)?;
+                endpoint.set_default_client_config(client_config.clone());
 
-        tracing::info!(
-            "TUIC QUIC connection established to {}:{} ({})",
-            self.server,
-            self.port,
-            addr,
-        );
+                let connecting = endpoint.connect(addr, &self.sni)?;
+                match tokio::time::timeout(TUIC_CONNECT_TIMEOUT, connecting).await {
+                    Ok(Ok(connection)) => {
+                        tracing::info!(
+                            "TUIC QUIC connection established to {}:{} ({}) on attempt {}/{}",
+                            self.server,
+                            self.port,
+                            addr,
+                            attempt,
+                            TUIC_CONNECT_ATTEMPTS_PER_ADDR
+                        );
+                        return Ok((endpoint, connection));
+                    }
+                    Ok(Err(err)) => {
+                        last_err = Some(anyhow::anyhow!(
+                            "TUIC QUIC connection to {}:{} via {} failed on attempt {}/{}: {}",
+                            self.server,
+                            self.port,
+                            addr,
+                            attempt,
+                            TUIC_CONNECT_ATTEMPTS_PER_ADDR,
+                            err
+                        ));
+                    }
+                    Err(_) => {
+                        last_err = Some(anyhow::anyhow!(
+                            "TUIC QUIC connection to {}:{} via {} timed out on attempt {}/{} after {}s (UDP may be blocked or unstable)",
+                            self.server,
+                            self.port,
+                            addr,
+                            attempt,
+                            TUIC_CONNECT_ATTEMPTS_PER_ADDR,
+                            TUIC_CONNECT_TIMEOUT.as_secs()
+                        ));
+                    }
+                }
 
-        Ok((endpoint, connection))
+                if attempt < TUIC_CONNECT_ATTEMPTS_PER_ADDR {
+                    tokio::time::sleep(TUIC_CONNECT_RETRY_BACKOFF).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            anyhow::anyhow!(
+                "TUIC QUIC connection to {}:{} failed without a concrete error",
+                self.server,
+                self.port
+            )
+        }))
     }
 
     /// Send authentication on a unidirectional stream.
@@ -398,17 +433,21 @@ fn build_quic_client_config(
     Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
 }
 
-/// Resolve server hostname to SocketAddr, preferring IPv4.
-async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr> {
+fn prefer_socket_addrs(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
+    addrs.dedup();
+    addrs
+}
+
+/// Resolve server hostname to SocketAddr candidates, preferring IPv4 first.
+async fn resolve_server_addrs(server: &str, port: u16) -> Result<Vec<SocketAddr>> {
     use tokio::net::lookup_host;
     let addrs: Vec<_> = lookup_host(format!("{}:{}", server, port)).await?.collect();
-    // Prefer IPv4 to avoid IPv4/IPv6 mismatch issues on Linux
-    addrs
-        .iter()
-        .find(|a| a.is_ipv4())
-        .or(addrs.first())
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("Failed to resolve {}", server))
+    let addrs = prefer_socket_addrs(addrs);
+    if addrs.is_empty() {
+        bail!("Failed to resolve {}", server);
+    }
+    Ok(addrs)
 }
 
 /// Insecure certificate verifier for skip_cert_verify option.
@@ -520,5 +559,20 @@ mod tests {
         assert_eq!(ADDR_TYPE_DOMAIN, 0x00);
         assert_eq!(ADDR_TYPE_IPV4, 0x01);
         assert_eq!(ADDR_TYPE_IPV6, 0x02);
+    }
+
+    #[test]
+    fn test_prefer_socket_addrs_prefers_ipv4_and_dedups() {
+        let ordered = prefer_socket_addrs(vec![
+            "[2001:db8::1]:443".parse().unwrap(),
+            "198.51.100.10:443".parse().unwrap(),
+            "198.51.100.10:443".parse().unwrap(),
+            "[2001:db8::2]:443".parse().unwrap(),
+        ]);
+
+        assert_eq!(ordered.len(), 3);
+        assert!(ordered[0].is_ipv4());
+        assert!(ordered[1].is_ipv6());
+        assert!(ordered[2].is_ipv6());
     }
 }

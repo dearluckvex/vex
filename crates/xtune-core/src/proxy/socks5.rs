@@ -135,8 +135,7 @@ async fn handle_socks5(mut stream: TcpStream, outbound: SharedOutbound) -> Resul
             match outbound.connect(&host, port).await {
                 Ok(mut remote) => {
                     stream.write_all(&socks5_reply(0x00)).await?; // success
-                    let (up, down) =
-                        relay_bidirectional(&mut stream, &mut remote).await?;
+                    let (up, down) = relay_bidirectional(&mut stream, &mut remote).await?;
                     tracing::debug!(
                         "SOCKS5 relay {}:{} done: up={} down={}",
                         host,

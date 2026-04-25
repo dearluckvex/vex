@@ -435,7 +435,11 @@ proxies:
 proxy-groups: []
 "#;
         let nodes = parse_clash_config(yaml).unwrap();
-        assert_eq!(nodes.len(), 2, "SS+shadow-tls should be skipped, leaving 2 nodes");
+        assert_eq!(
+            nodes.len(),
+            2,
+            "SS+shadow-tls should be skipped, leaving 2 nodes"
+        );
 
         // VLESS Reality: transport should be Reality, not plain TLS
         let vless = &nodes[0];
@@ -447,7 +451,10 @@ proxy-groups: []
             transport.transport_type
         );
         let reality = transport.reality.as_ref().unwrap();
-        assert_eq!(reality.public_key, "OIZG5tPDg7SHoOHjvZ-UpKnEPynbFmiNXnNMEDZfoWg");
+        assert_eq!(
+            reality.public_key,
+            "OIZG5tPDg7SHoOHjvZ-UpKnEPynbFmiNXnNMEDZfoWg"
+        );
         assert_eq!(reality.short_id, ""); // default empty when not specified
         assert_eq!(reality.sni.as_deref(), Some("azure.microsoft.com"));
 

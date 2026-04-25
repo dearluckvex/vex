@@ -62,12 +62,27 @@ pub fn emergency_restore_routes() {
         None => return, // TUN was not active or already cleaned up
     };
 
-    tracing::info!("Emergency: restoring routes (gateway={}, iface={})", state.orig_gateway, state.orig_iface);
+    tracing::info!(
+        "Emergency: restoring routes (gateway={}, iface={})",
+        state.orig_gateway,
+        state.orig_iface
+    );
 
     #[cfg(target_os = "linux")]
     {
         let gw = state.orig_gateway.to_string();
-        let _ = run_cmd_sync("ip", &["route", "replace", "default", "via", &gw, "dev", &state.orig_iface]);
+        let _ = run_cmd_sync(
+            "ip",
+            &[
+                "route",
+                "replace",
+                "default",
+                "via",
+                &gw,
+                "dev",
+                &state.orig_iface,
+            ],
+        );
         for ip in &state.bypass_ips {
             let ip_route = format!("{}/32", ip);
             let _ = run_cmd_sync("ip", &["route", "del", &ip_route]);
@@ -89,9 +104,17 @@ pub fn emergency_restore_routes() {
     #[cfg(target_os = "windows")]
     {
         let gw = state.orig_gateway.to_string();
-        if run_cmd_sync("route", &["change", "0.0.0.0", "mask", "0.0.0.0", &gw, "metric", "5"]).is_err() {
+        if run_cmd_sync(
+            "route",
+            &["change", "0.0.0.0", "mask", "0.0.0.0", &gw, "metric", "5"],
+        )
+        .is_err()
+        {
             let _ = run_cmd_sync("route", &["delete", "0.0.0.0"]);
-            let _ = run_cmd_sync("route", &["add", "0.0.0.0", "mask", "0.0.0.0", &gw, "metric", "5"]);
+            let _ = run_cmd_sync(
+                "route",
+                &["add", "0.0.0.0", "mask", "0.0.0.0", &gw, "metric", "5"],
+            );
         }
         for ip in &state.bypass_ips {
             let _ = run_cmd_sync("route", &["delete", &ip.to_string()]);
@@ -351,10 +374,8 @@ where
         Ok((domain, qtype)) => {
             tracing::trace!("TUN DNS: {} (type {})", domain, qtype);
 
-            let timeout = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                resolver.resolve(&domain),
-            );
+            let timeout =
+                tokio::time::timeout(std::time::Duration::from_secs(5), resolver.resolve(&domain));
 
             match timeout.await {
                 Ok(Ok(addrs)) => {
@@ -1103,7 +1124,9 @@ fn validate_tun_environment() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         if find_cmd("route").is_none() {
-            bail!("TUN mode requires the 'route' command (should be available by default on Windows)");
+            bail!(
+                "TUN mode requires the 'route' command (should be available by default on Windows)"
+            );
         }
     }
 
@@ -1250,9 +1273,8 @@ pub async fn ensure_wintun_dll() -> Result<std::path::PathBuf> {
         dll_path.display()
     );
 
-    std::fs::write(&dll_path, WINTUN_DLL_BYTES).with_context(|| {
-        format!("failed to write wintun.dll to {}", dll_path.display())
-    })?;
+    std::fs::write(&dll_path, WINTUN_DLL_BYTES)
+        .with_context(|| format!("failed to write wintun.dll to {}", dll_path.display()))?;
 
     tracing::info!("wintun.dll installed at {}", dll_path.display());
     Ok(dll_path)

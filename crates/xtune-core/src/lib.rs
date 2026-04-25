@@ -16,7 +16,9 @@ pub use config::v2ray::{
     parse_v2ray_config, parse_vless_uri, parse_vmess_uri,
 };
 
-pub use proxy::connector::{BoxProxyStream, DirectOutbound, Outbound, ProxyStream, SharedOutbound};
+pub use proxy::connector::{
+    BoxProxyStream, DirectOutbound, Outbound, ProxyStream, RetryOutbound, SharedOutbound,
+};
 pub use proxy::factory::create_outbound;
 pub use proxy::http::HttpProxyServer;
 pub use proxy::hysteria2::Hysteria2Outbound;
@@ -24,7 +26,9 @@ pub use proxy::relay::relay_bidirectional;
 pub use proxy::routing::RoutingOutbound;
 pub use proxy::service::ProxyService;
 pub use proxy::socks5::Socks5Server;
-pub use proxy::speedtest::{SpeedTestResult, http_latency_test, latency_test_node, speed_test_node, tcp_latency_test};
+pub use proxy::speedtest::{
+    SpeedTestResult, http_latency_test, latency_test_node, speed_test_node, tcp_latency_test,
+};
 pub use proxy::ss::SsOutbound;
 pub use proxy::trojan::TrojanOutbound;
 pub use proxy::tuic::TuicOutbound;

@@ -95,7 +95,8 @@ impl tracing::field::Visit for MessageVisitor {
         } else if self.0.is_empty() {
             self.0 = format!("{} = {:?}", field.name(), value);
         } else {
-            self.0.push_str(&format!(", {} = {:?}", field.name(), value));
+            self.0
+                .push_str(&format!(", {} = {:?}", field.name(), value));
         }
     }
 

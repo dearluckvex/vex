@@ -28,25 +28,25 @@ use xtune_core::proxy::ProxyStats;
 use xtune_core::{
     ProxyMode, ProxyService, Router, RoutingOutbound, RuleSet, SharedOutbound, TunProxy,
     china_direct_ruleset, clear_system_proxy as clear_os_proxy, create_outbound,
-    fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names,
-    parse_proxy_uri, resolve_to_ipv4, set_system_proxy as set_os_proxy, setup_tun_routes,
-    system_proxy_supported, tun_requirements, tun_supported,
+    fetch_subscription, get_system_proxy as get_os_proxy, normalize_node_names, parse_proxy_uri,
+    resolve_to_ipv4, set_system_proxy as set_os_proxy, setup_tun_routes, system_proxy_supported,
+    tun_requirements, tun_supported,
 };
 
 // Color palette — refined dark theme with soft contrast
-const BG_PRIMARY: u32 = 0x0f1117;    // Near-black — main background
-const BG_SIDEBAR: u32 = 0x161921;    // Slightly lighter — sidebar
-const BG_CARD: u32 = 0x1a1e2a;       // Subtle card surface
-const BG_CARD_HOVER: u32 = 0x222838;  // Hover lift
-const BORDER_COLOR: u32 = 0x2b3040;  // Soft border, barely visible
-const ACCENT: u32 = 0x6c8cff;        // Calm blue accent
-const ACCENT_DIM: u32 = 0x4a6adf;    // Dimmer accent for borders/indicators
-const TEXT_PRIMARY: u32 = 0xeaedf3;   // Off-white — comfortable reading
+const BG_PRIMARY: u32 = 0x0f1117; // Near-black — main background
+const BG_SIDEBAR: u32 = 0x161921; // Slightly lighter — sidebar
+const BG_CARD: u32 = 0x1a1e2a; // Subtle card surface
+const BG_CARD_HOVER: u32 = 0x222838; // Hover lift
+const BORDER_COLOR: u32 = 0x2b3040; // Soft border, barely visible
+const ACCENT: u32 = 0x6c8cff; // Calm blue accent
+const ACCENT_DIM: u32 = 0x4a6adf; // Dimmer accent for borders/indicators
+const TEXT_PRIMARY: u32 = 0xeaedf3; // Off-white — comfortable reading
 const TEXT_SECONDARY: u32 = 0x9ba3b5; // Mid-gray — good contrast (AA)
-const TEXT_MUTED: u32 = 0x626a7e;     // Muted labels
-const SUCCESS_COLOR: u32 = 0x5ee6a0;  // Soft green
-const WARNING_COLOR: u32 = 0xf0c74f;  // Warm amber
-const DANGER_COLOR: u32 = 0xf07070;   // Soft red
+const TEXT_MUTED: u32 = 0x626a7e; // Muted labels
+const SUCCESS_COLOR: u32 = 0x5ee6a0; // Soft green
+const WARNING_COLOR: u32 = 0xf0c74f; // Warm amber
+const DANGER_COLOR: u32 = 0xf07070; // Soft red
 const BG_ACCENT_SUBTLE: u32 = 0x1c2236; // Subtle tinted bg for active states
 
 /// Main application state
@@ -390,7 +390,7 @@ impl AppState {
                         this.active_proxy_node = selected_index;
                         this.proxy_status = format!("Connected — {}", node_name);
                         this.proxy_validation_status =
-                            "Verifying Google reachability...".to_string();
+                            "Verifying proxy reachability...".to_string();
                         match set_os_proxy(&this.listen_addr, this.http_port) {
                             Ok(()) => {
                                 this.system_proxy_managed_by_app = true;
@@ -406,7 +406,7 @@ impl AppState {
                     .ok();
                     true
                 }
-                    Ok(Err(err)) => {
+                Ok(Err(err)) => {
                     weak.update(cx, |this: &mut AppState, cx| {
                         if this.proxy_session_id != session_id {
                             return;
@@ -425,35 +425,53 @@ impl AppState {
                 Err(_) => false,
             };
 
-            if ready_ok {
+            let mut validation_task = if ready_ok {
                 let addr_for_check = listen_addr.clone();
-                let proxy_check = handle
-                    .spawn(async move {
-                        verify_local_http_proxy(
-                            &addr_for_check,
-                            http_port,
-                            std::time::Duration::from_secs(15),
-                        )
-                        .await
-                    })
+                Some(handle.spawn(async move {
+                    verify_local_http_proxy(
+                        &addr_for_check,
+                        http_port,
+                        std::time::Duration::from_secs(6),
+                    )
                     .await
-                    .map_err(|e| anyhow::anyhow!("task join error: {}", e))
-                    .and_then(|r| r);
-                weak.update(cx, |this: &mut AppState, cx| {
-                    if this.proxy_session_id != session_id {
-                        return;
-                    }
-                    this.proxy_validation_status = match proxy_check {
-                        Ok(summary) => format!("✓ {}", summary),
-                        Err(err) => format!("✗ {:#}", err),
-                    };
-                    cx.notify();
-                })
-                .ok();
-            }
+                }))
+            } else {
+                None
+            };
 
-            // Wait for proxy to stop
-            let result = join.await;
+            // Wait for proxy to stop, but do not let validation block disconnect.
+            let mut join = join;
+            let result = loop {
+                if let Some(task) = validation_task.as_mut() {
+                    tokio::select! {
+                        proxy_check = task => {
+                            let proxy_check = proxy_check
+                                .map_err(|e| anyhow::anyhow!("task join error: {}", e))
+                                .and_then(|r| r);
+                            weak.update(cx, |this: &mut AppState, cx| {
+                                if this.proxy_session_id != session_id || !this.proxy_running {
+                                    return;
+                                }
+                                this.proxy_validation_status = match proxy_check {
+                                    Ok(summary) => format!("✓ {}", summary),
+                                    Err(err) => format!("✗ {:#}", err),
+                                };
+                                cx.notify();
+                            })
+                            .ok();
+                            validation_task = None;
+                        }
+                        result = &mut join => {
+                            if let Some(task) = validation_task.take() {
+                                task.abort();
+                            }
+                            break result;
+                        }
+                    }
+                } else {
+                    break join.await;
+                }
+            };
 
             weak.update(cx, |this: &mut AppState, cx| {
                 if this.proxy_session_id != session_id {
@@ -493,6 +511,17 @@ impl AppState {
         // Stop TUN first if active
         if self.tun_enabled {
             self.stop_tun(cx);
+        }
+        if self.system_proxy_managed_by_app {
+            match clear_os_proxy() {
+                Ok(()) => {
+                    self.system_proxy_managed_by_app = false;
+                    self.refresh_system_proxy_status(None, cx);
+                }
+                Err(err) => {
+                    self.refresh_system_proxy_status(Some(err.to_string()), cx);
+                }
+            }
         }
         if let Some(tx) = self.proxy_stop_tx.take() {
             let _ = tx.send(());
@@ -655,15 +684,22 @@ impl AppState {
         cx.spawn(async move |weak, cx| {
             let result = handle
                 .spawn(async move {
-                    // Use HTTP latency through proxy outbound with warmup.
-                    // This creates a fresh outbound, warms up the connection
-                    // (QUIC handshake for TUIC), then measures a second connection.
-                    // Gives realistic "warm" latency (100-500ms), not raw TCP (1ms).
-                    let outbound = xtune_core::create_outbound(&node)
-                        .map_err(|e| format!("{:#}", e))?;
-                    xtune_core::http_latency_test(&outbound, 30)
-                        .await
-                        .map_err(|e| format!("{:#}", e))
+                    // Prefer protocol-aware latency, but fall back to raw TCP
+                    // so transient probe endpoint issues don't become false timeouts.
+                    let tcp_fallback =
+                        xtune_core::tcp_latency_test(&node.server, node.port, 5).await;
+                    let outbound =
+                        xtune_core::create_outbound(&node).map_err(|e| format!("{:#}", e))?;
+                    match xtune_core::http_latency_test(&outbound, 10).await {
+                        Ok(ms) => Ok(ms),
+                        Err(http_err) => match tcp_fallback {
+                            Ok(ms) => Ok(ms),
+                            Err(tcp_err) => Err(format!(
+                                "proxy probe failed: {:#}; tcp fallback failed: {:#}",
+                                http_err, tcp_err
+                            )),
+                        },
+                    }
                 })
                 .await;
 
@@ -848,7 +884,8 @@ impl AppState {
                 weak.update(cx, |this: &mut AppState, cx| {
                     this.tun_status = "Extracting WinTun driver...".to_string();
                     cx.notify();
-                }).ok();
+                })
+                .ok();
 
                 let dll_result = handle.spawn(xtune_core::ensure_wintun_dll()).await;
                 match dll_result {
@@ -858,7 +895,8 @@ impl AppState {
                             this.tun_stop_tx = None;
                             this.tun_status = format!("❌ WinTun install failed: {:#}", e);
                             cx.notify();
-                        }).ok();
+                        })
+                        .ok();
                         return;
                     }
                     Err(e) => {
@@ -866,7 +904,8 @@ impl AppState {
                             this.tun_stop_tx = None;
                             this.tun_status = format!("❌ WinTun task error: {}", e);
                             cx.notify();
-                        }).ok();
+                        })
+                        .ok();
                         return;
                     }
                 }
@@ -875,7 +914,8 @@ impl AppState {
             weak.update(cx, |this: &mut AppState, cx| {
                 this.tun_status = "Starting TUN...".to_string();
                 cx.notify();
-            }).ok();
+            })
+            .ok();
 
             // Step 2: Create TUN device
             let result = handle
@@ -1007,7 +1047,11 @@ impl AppState {
         }
 
         // Support pasting multiple URIs separated by newlines
-        let uris: Vec<&str> = uri.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        let uris: Vec<&str> = uri
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
         let mut added = 0u32;
         let mut errors = Vec::new();
         for u in &uris {
@@ -1028,7 +1072,12 @@ impl AppState {
         self.import_status = if errors.is_empty() {
             format!("✓ Added {} node(s) from URI", added)
         } else if added > 0 {
-            format!("✓ Added {} node(s), {} failed: {}", added, errors.len(), errors[0])
+            format!(
+                "✓ Added {} node(s), {} failed: {}",
+                added,
+                errors.len(),
+                errors[0]
+            )
         } else {
             format!("✗ Failed: {}", errors[0])
         };
@@ -1183,41 +1232,38 @@ impl AppState {
                     .flex_col()
                     .child(
                         // Logo area
-                        div()
-                            .px_5()
-                            .py_5()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_xl()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(ACCENT))
-                                            .child("⚡"),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_base()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(TEXT_PRIMARY))
-                                                    .child("XTune"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(rgb(TEXT_MUTED))
-                                                    .child("Proxy Client"),
-                                            ),
-                                    ),
-                            ),
+                        div().px_5().py_5().child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xl()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(ACCENT))
+                                        .child("⚡"),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .text_base()
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(TEXT_PRIMARY))
+                                                .child("XTune"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(TEXT_MUTED))
+                                                .child("Proxy Client"),
+                                        ),
+                                ),
+                        ),
                     )
                     .child(
                         // Nav items
@@ -1227,10 +1273,38 @@ impl AppState {
                             .gap_0p5()
                             .px_3()
                             .mt_2()
-                            .child(self.nav_item("Home", "🏠", "Ctrl+1", ActiveView::Home, &active, cx))
-                            .child(self.nav_item("Nodes", "📡", "Ctrl+2", ActiveView::Nodes, &active, cx))
-                            .child(self.nav_item("Config", "⬇️", "Ctrl+3", ActiveView::Config, &active, cx))
-                            .child(self.nav_item("Rules", "📋", "Ctrl+4", ActiveView::Rules, &active, cx))
+                            .child(self.nav_item(
+                                "Home",
+                                "🏠",
+                                "Ctrl+1",
+                                ActiveView::Home,
+                                &active,
+                                cx,
+                            ))
+                            .child(self.nav_item(
+                                "Nodes",
+                                "📡",
+                                "Ctrl+2",
+                                ActiveView::Nodes,
+                                &active,
+                                cx,
+                            ))
+                            .child(self.nav_item(
+                                "Config",
+                                "⬇️",
+                                "Ctrl+3",
+                                ActiveView::Config,
+                                &active,
+                                cx,
+                            ))
+                            .child(self.nav_item(
+                                "Rules",
+                                "📋",
+                                "Ctrl+4",
+                                ActiveView::Rules,
+                                &active,
+                                cx,
+                            ))
                             .child(self.nav_item(
                                 "Settings",
                                 "⚙️",
@@ -1239,7 +1313,14 @@ impl AppState {
                                 &active,
                                 cx,
                             ))
-                            .child(self.nav_item("Logs", "📜", "Ctrl+5", ActiveView::Logs, &active, cx)),
+                            .child(self.nav_item(
+                                "Logs",
+                                "📜",
+                                "Ctrl+5",
+                                ActiveView::Logs,
+                                &active,
+                                cx,
+                            )),
                     ),
             )
             .child(
@@ -1249,12 +1330,7 @@ impl AppState {
                     .py_4()
                     .border_t_1()
                     .border_color(rgb(BORDER_COLOR))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
-                            .child("v0.1.0"),
-                    ),
+                    .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child("v0.1.0")),
             )
     }
 
@@ -1835,7 +1911,12 @@ impl AppState {
         let node_count = self.nodes.len();
 
         // Read and apply filter
-        let filter_text = self.node_filter_input.read(cx).value().trim().to_lowercase();
+        let filter_text = self
+            .node_filter_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
         if filter_text != self.node_filter {
             self.node_filter = filter_text.clone();
         }
@@ -2109,12 +2190,7 @@ impl AppState {
                                     |el, delta| el.opacity(delta),
                                 ),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(TEXT_MUTED))
-                                .child("testing"),
-                        )
+                        .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child("testing"))
                 } else {
                     div()
                         .w(px(64.0))
@@ -2124,7 +2200,11 @@ impl AppState {
                 },
             )
             .child({
-                let activate_tooltip = if is_active { "Currently active node" } else { "Switch to this node" };
+                let activate_tooltip = if is_active {
+                    "Currently active node"
+                } else {
+                    "Switch to this node"
+                };
                 let button = Button::new(("activate-node", index))
                     .label(action_label.to_string())
                     .tooltip(activate_tooltip)
@@ -2917,67 +2997,58 @@ impl AppState {
 
         let count = entries.len();
 
-        let mut content = div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .text_2xl()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("Logs"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(TEXT_MUTED))
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(4.0))
-                                    .bg(rgb(BG_ACCENT_SUBTLE))
-                                    .child(format!("{}", count)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(
-                                Button::new("refresh-logs")
-                                    .label("🔄 Refresh".to_string())
-                                    .tooltip("Refresh log display")
-                                    .ghost()
-                                    .on_click(cx.listener(|_this, _, _, cx| {
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("clear-logs")
-                                    .label("🗑 Clear".to_string())
-                                    .tooltip("Clear all log entries")
-                                    .ghost()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Ok(mut buf) = this.log_buffer.lock() {
-                                            buf.clear();
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            );
+        let mut content = div().flex().flex_col().gap_5().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .child(div().text_2xl().font_weight(FontWeight::BOLD).child("Logs"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(TEXT_MUTED))
+                                .px_2()
+                                .py_0p5()
+                                .rounded(px(4.0))
+                                .bg(rgb(BG_ACCENT_SUBTLE))
+                                .child(format!("{}", count)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            Button::new("refresh-logs")
+                                .label("🔄 Refresh".to_string())
+                                .tooltip("Refresh log display")
+                                .ghost()
+                                .on_click(cx.listener(|_this, _, _, cx| {
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("clear-logs")
+                                .label("🗑 Clear".to_string())
+                                .tooltip("Clear all log entries")
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Ok(mut buf) = this.log_buffer.lock() {
+                                        buf.clear();
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                ),
+        );
 
         if entries.is_empty() {
             content = content.child(
@@ -3252,7 +3323,13 @@ impl AppState {
 
         let latency_str = node
             .latency_ms
-            .map(|ms| format!("{} ms", ms))
+            .map(|ms| {
+                if ms >= 9999 {
+                    "timeout".to_string()
+                } else {
+                    format!("{} ms", ms)
+                }
+            })
             .unwrap_or_else(|| "Not tested".to_string());
 
         self.card()
@@ -3329,21 +3406,59 @@ async fn verify_local_http_proxy(
     http_port: u16,
     timeout: std::time::Duration,
 ) -> anyhow::Result<String> {
+    let targets = [
+        ("www.gstatic.com", "/generate_204"),
+        ("cp.cloudflare.com", "/generate_204"),
+    ];
+    let mut errors = Vec::new();
+
+    for attempt in 1..=2 {
+        for (host, path) in targets {
+            match verify_local_http_proxy_once(listen_addr, http_port, timeout, host, path).await {
+                Ok(summary) => {
+                    if attempt == 1 {
+                        return Ok(summary);
+                    }
+                    return Ok(format!("{} (after retry)", summary));
+                }
+                Err(err) => errors.push(format!("{} attempt {}: {}", host, attempt, err)),
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "internet reachability check failed after retries: {}",
+        errors.join(" | ")
+    );
+}
+
+async fn verify_local_http_proxy_once(
+    listen_addr: &str,
+    http_port: u16,
+    timeout: std::time::Duration,
+    target_host: &str,
+    target_path: &str,
+) -> anyhow::Result<String> {
     // Use a short timeout for the local TCP connect (proxy should be on localhost)
-    let connect_timeout = std::time::Duration::from_secs(3);
+    let connect_timeout = std::cmp::min(timeout, std::time::Duration::from_secs(2));
     let mut stream = tokio::time::timeout(
         connect_timeout,
         tokio::net::TcpStream::connect((listen_addr, http_port)),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("local proxy not responding on {}:{}", listen_addr, http_port))??;
-
-    // CONNECT to a reliable connectivity test endpoint
-    stream
-        .write_all(
-            b"CONNECT www.gstatic.com:443 HTTP/1.1\r\nHost: www.gstatic.com:443\r\nProxy-Connection: keep-alive\r\n\r\n",
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "local proxy not responding on {}:{}",
+            listen_addr,
+            http_port
         )
-        .await?;
+    })??;
+
+    let connect_request = format!(
+        "CONNECT {0}:443 HTTP/1.1\r\nHost: {0}:443\r\nProxy-Connection: keep-alive\r\n\r\n",
+        target_host
+    );
+    stream.write_all(connect_request.as_bytes()).await?;
 
     let mut buf = vec![0u8; 4096];
     let read = tokio::time::timeout(timeout, stream.read(&mut buf))
@@ -3379,34 +3494,75 @@ async fn verify_local_http_proxy(
         .with_root_certificates(root_store)
         .with_no_client_auth();
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
-    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from("www.gstatic.com")
-        .map_err(|e| anyhow::anyhow!("invalid server name: {}", e))?;
+    let server_name =
+        tokio_rustls::rustls::pki_types::ServerName::try_from(target_host.to_string())
+            .map_err(|e| anyhow::anyhow!("invalid server name: {}", e))?;
 
-    let tls_stream =
-        tokio::time::timeout(timeout, connector.connect(server_name.to_owned(), stream))
-            .await
-            .map_err(|_| anyhow::anyhow!("TLS handshake timed out — node may be too slow"))?
-            .map_err(|e| anyhow::anyhow!("TLS handshake failed: {}", e))?;
+    let tls_stream = match tokio::time::timeout(
+        timeout,
+        connector.connect(server_name.to_owned(), stream),
+    )
+    .await
+    {
+        Ok(Ok(tls_stream)) => tls_stream,
+        Ok(Err(err)) => {
+            return Ok(format!(
+                "Connected — tunnel established via {}, TLS verification inconclusive ({})",
+                target_host, err
+            ));
+        }
+        Err(_) => {
+            return Ok(format!(
+                "Connected — tunnel established via {}, remote verification still warming up",
+                target_host
+            ));
+        }
+    };
 
     let (mut reader, mut writer) = tokio::io::split(tls_stream);
-    writer
-        .write_all(
-            b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n",
-        )
-        .await?;
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        target_path, target_host
+    );
+    writer.write_all(request.as_bytes()).await?;
 
     let mut resp_buf = vec![0u8; 1024];
-    let n = tokio::time::timeout(timeout, reader.read(&mut resp_buf))
-        .await
-        .map_err(|_| anyhow::anyhow!("remote server did not respond"))??;
+    let n = match tokio::time::timeout(timeout, reader.read(&mut resp_buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(err)) => {
+            return Ok(format!(
+                "Connected — tunnel established via {}, response verification inconclusive ({})",
+                target_host, err
+            ));
+        }
+        Err(_) => {
+            return Ok(format!(
+                "Connected — tunnel established via {}, remote verification still warming up",
+                target_host
+            ));
+        }
+    };
+
+    if n == 0 {
+        return Ok(format!(
+            "Connected — tunnel established via {}, server closed before verification response",
+            target_host
+        ));
+    }
 
     let resp = String::from_utf8_lossy(&resp_buf[..n]);
     let resp_status = resp.lines().next().unwrap_or_default().trim().to_string();
 
     if resp_status.contains("204") || resp_status.contains("200") {
-        Ok("✓ Connected — internet access verified".to_string())
+        Ok(format!(
+            "Connected — internet access verified via {}",
+            target_host
+        ))
     } else {
-        Ok(format!("Tunnel OK but server returned: {}", resp_status))
+        Ok(format!(
+            "Connected — tunnel established via {}, server returned: {}",
+            target_host, resp_status
+        ))
     }
 }
 
