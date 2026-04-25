@@ -129,6 +129,8 @@ pub struct AppState {
 
     // Saved subscriptions (URL + metadata) for auto-refresh
     subscriptions: Vec<Subscription>,
+    // Indices of subscriptions currently being refreshed (shows spinner)
+    refreshing_subscriptions: std::collections::HashSet<usize>,
 
     // Manual node URI input
     node_uri_input: Entity<InputState>,
@@ -291,6 +293,7 @@ impl AppState {
             latency_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
             pending_persist: false,
             subscriptions: persisted.subscriptions.clone(),
+            refreshing_subscriptions: std::collections::HashSet::new(),
             node_uri_input,
             editing_rule_index: None,
             log_buffer,
@@ -1329,6 +1332,12 @@ impl AppState {
         let Some(sub) = self.subscriptions.get(sub_index).cloned() else {
             return;
         };
+        if self.refreshing_subscriptions.contains(&sub_index) {
+            return; // already refreshing this one
+        }
+        self.refreshing_subscriptions.insert(sub_index);
+        cx.notify();
+
         let handle = self.tokio_handle.clone();
         let url = sub.url.clone();
 
@@ -1386,6 +1395,7 @@ impl AppState {
                                         .as_secs(),
                                 );
                             }
+                            this.refreshing_subscriptions.remove(&sub_index);
                             this.import_status = format!(
                                 "✓ Refreshed '{}': {} nodes",
                                 this.subscriptions
@@ -1416,6 +1426,7 @@ impl AppState {
                     .get(sub_index)
                     .map(|s| s.name.clone())
                     .unwrap_or_else(|| "subscription".to_string());
+                this.refreshing_subscriptions.remove(&sub_index);
                 this.import_status =
                     format!("⚠ Refresh failed for '{}': {}", name, last_err);
                 cx.notify();
@@ -2678,11 +2689,12 @@ impl AppState {
     fn cycle_refresh_interval(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(sub) = self.subscriptions.get_mut(index) {
             sub.refresh_interval_hours = match sub.refresh_interval_hours {
-                0 => 24,
-                6 => 0,
-                12 => 6,
-                24 => 12,
-                _ => 24,
+                0 => 1,
+                1 => 2,
+                2 => 6,
+                6 => 12,
+                12 => 24,
+                _ => 0, // 24 or any custom → Off
             };
         }
         self.persist_gui_state();
@@ -2736,6 +2748,7 @@ impl AppState {
             let last_updated = Self::format_last_updated(sub.last_updated);
             let interval_label = match sub.refresh_interval_hours {
                 0 => "Off".to_string(),
+                1 => "1h".to_string(),
                 h => format!("{}h", h),
             };
             let url_display = if sub.url.len() > 48 {
@@ -2749,6 +2762,7 @@ impl AppState {
                 .iter()
                 .filter(|n| n.extra.get("sub_url").map_or(false, |u| u == &sub.url))
                 .count();
+            let is_refreshing = self.refreshing_subscriptions.contains(&i);
 
             let row = div()
                 .flex()
@@ -2796,14 +2810,18 @@ impl AppState {
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(TEXT_MUTED))
-                                .child(format!("Updated: {}", last_updated)),
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .child(if is_refreshing {
+                                    format!("Updated: {} (refreshing…)", last_updated)
+                                } else {
+                                    format!("Updated: {}", last_updated)
+                                }),
                         )
                         .child(
                             // Interval cycle button
                             Button::new(("interval-btn", i))
                                 .label(format!("⏱ {}", interval_label))
-                                .tooltip("Click to cycle refresh interval: 24h → 12h → 6h → Off")
+                                .tooltip("Click to cycle: Off → 1h → 2h → 6h → 12h → 24h → Off")
                                 .ghost()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.cycle_refresh_interval(i, cx);
@@ -2816,6 +2834,7 @@ impl AppState {
                                 .label("↻ Refresh".to_string())
                                 .tooltip("Fetch new nodes from this subscription now")
                                 .ghost()
+                                .loading(is_refreshing)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.refresh_subscription(i, cx);
                                 })),
