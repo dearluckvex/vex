@@ -26,6 +26,9 @@
 18. [统计采集（ProxyStats）](#18-统计采集proxystats)
 19. [完整连接数据流（TUIC 示例）](#19-完整连接数据流tuic-示例)
 20. [TUN 模式](#20-tun-模式)
+21. [并发模型：GPUI + tokio](#21-并发模型gpui--tokio)
+22. [订阅管理流程](#22-订阅管理流程)
+23. [RetryOutbound 退避时序](#23-retryoutbound-退避时序)
 
 ---
 
@@ -535,7 +538,31 @@ pub fn build_tls_connector(tls_config: &TlsConfig) -> Result<TlsConnector> {
 }
 ```
 
-### 8.4 根证书缓存
+### 8.4 双 TLS 栈架构
+
+xtune-core 内**同时存在两套 TLS 实现**，通过 API 版本隔离，互不干扰：
+
+```mermaid
+graph TD
+    subgraph TCP["TCP 协议路径 (VMess/VLess/Trojan/SS)"]
+        craftls["craftls (rustls 0.22/0.25 fork)\n指纹伪装 ClientHello\nbuild_tls_connector()"]
+        craft_tokio["craft-tls (tokio-rustls 0.25)\nTLS over TCP stream"]
+        craftls --> craft_tokio
+    end
+
+    subgraph QUIC["QUIC 协议路径 (TUIC/Hysteria2)"]
+        std_rustls["标准 rustls 0.23\n无指纹伪装（QUIC 协议本身抗 DPI）\nget_quic_root_certs()"]
+        quinn_lib["quinn 0.11\nQUIC 传输层"]
+        std_rustls --> quinn_lib
+    end
+
+    patch["Cargo.toml [patch.crates-io]\ncraftls = { path = 'crates/craftls' }"]
+    patch -.->|"替换"| craftls
+```
+
+**为何 QUIC 不用 craftls**：QUIC 基于 UDP 且所有数据加密，流量特征与 TLS-over-TCP 不同，DPI 设备识别方式不同。而且 `quinn` 绑定标准 `rustls 0.23` API，craftls 的 0.22/0.25 API 不兼容。
+
+### 8.5 根证书缓存
 
 ```rust
 static QUIC_ROOT_CERTS: OnceLock<RootCertStore> = OnceLock::new();
@@ -549,7 +576,7 @@ fn get_quic_root_certs() -> &'static RootCertStore {
 }
 ```
 
-根证书在进程生命周期内只构建一次（约 1-2ms），后续所有连接直接引用静态引用。
+根证书在进程生命周期内只构建一次（约 1-2ms），后续所有连接直接引用静态引用。**注意**：craftls（TCP 路径）和标准 rustls（QUIC 路径）各有独立的根证书缓存 static。
 
 ---
 
@@ -600,11 +627,78 @@ where A: AsyncRead + AsyncWrite + Unpin + ?Sized,
 }
 ```
 
+### 10.1 Relay Future 内部结构
+
+```mermaid
+classDiagram
+    class Relay {
+        a: &mut A
+        b: &mut B
+        a_buf: CopyBuf   %% A→B 方向的 64KB 缓冲区
+        b_buf: CopyBuf   %% B→A 方向的 64KB 缓冲区
+        a_to_b: u64      %% 累计 A→B 字节（仅 Ready 时累积）
+        b_to_a: u64      %% 累计 B→A 字节（仅 Ready 时累积）
+        a_done: bool     %% A 读端已 EOF
+        b_done: bool     %% B 读端已 EOF
+    }
+    class CopyBuf {
+        buf: Box[u8;65536]
+        pos: usize
+        cap: usize
+    }
+    Relay --> CopyBuf : a_buf
+    Relay --> CopyBuf : b_buf
+```
+
+### 10.2 transfer_one 状态机
+
+`transfer_one(cx, reader, writer, buf, done)` 在单次 `poll()` 调用中尽可能传输数据：
+
+```mermaid
+flowchart TD
+    Start([每次 Relay::poll 调用]) --> Check1{"buf.pos < buf.cap?\n（缓冲区有待写数据）"}
+    Check1 -->|"是"| Write["poll_write(writer, buf[pos..cap])"]
+    Write --> W1{"ready?"}
+    W1 -->|"Pending"| RetPending["return Poll::Pending\n⚠️ transferred 局部变量丢失"]
+    W1 -->|"Ok(n)"| Acc["buf.pos += n\ntransferred += n"]
+    Acc --> Check1
+    Check1 -->|"否"| CheckDone{"*done?"}
+    CheckDone -->|"是"| Flush["poll_flush(writer)"]
+    Flush --> F1{"ready?"}
+    F1 -->|"Pending"| RetPending
+    F1 -->|"Ok"| RetReady["return Poll::Ready(Ok(transferred))"]
+    CheckDone -->|"否"| Read["poll_read(reader, buf)"]
+    Read --> R1{"ready?"}
+    R1 -->|"Pending"| RetPending
+    R1 -->|"n=0 EOF"| SetDone["*done=true; poll_shutdown"] --> RetReady
+    R1 -->|"n>0"| SetCap["buf.cap=n"] --> Check1
+```
+
+> **⚠️ 统计字节 Bug**：`transferred` 是 `transfer_one` 内的局部变量，在每次调用时从 0 开始。当 `poll_write` 返回 `Pending`（写入被内核缓冲区阻塞），即使此次迭代已经写出部分数据（`transferred > 0`），这些字节数也随 `Poll::Pending` 丢失，不会被 `Relay::a_to_b` 累积。对于 MB 级别的传输，最终 `ProxyStats.bytes_sent/bytes_received` 只会反映连接最后一个 `transfer_one` 周期内的字节数（通常 < 64KB），远低于实际传输量。
+
+### 10.3 优雅关闭序列
+
+```mermaid
+sequenceDiagram
+    participant A as 流 A（客户端）
+    participant R as Relay Future
+    participant B as 流 B（代理服务器）
+
+    A->>R: poll_read → n=0（EOF）
+    R->>B: poll_shutdown（关闭 A→B 写入方向）
+    Note over R: a_done = true
+    R->>B: 继续读 B→A 方向，直到 B 也 EOF
+    B->>R: poll_read → n=0（EOF）
+    R->>A: poll_shutdown（关闭 B→A 写入方向）
+    Note over R: b_done = true
+    R-->>Caller: Poll::Ready(Ok((a_to_b, b_to_a)))
+```
+
 **设计要点**：
 - 64KB 缓冲区：减少系统调用频率，提升吞吐量（参考 Clash 实现）
 - 全双工：两个方向同时监听，不阻塞彼此
-- 优雅关闭：收到 EOF 时 flush 后关闭对端写入，等待另一方向完成
-- 返回值：`(bytes_a→b, bytes_b→a)` 用于统计
+- 优雅关闭：收到 EOF 时 `poll_shutdown` 通知对端写半部关闭，等待另一方向完成
+- 返回值：`(bytes_a→b, bytes_b→a)` 理论上用于统计，但因上述 Bug 实际值偏低
 
 ---
 
@@ -1022,9 +1116,28 @@ struct StatsInner {
 |------|------|------|
 | 新连接建立 | `stats.add_connection()` | socks5.rs / http.rs handle 函数 |
 | 连接关闭 | `stats.remove_connection()` | relay_bidirectional 返回后 |
-| 数据传输 | `stats.add_bytes(sent, recv)` | relay 循环中每次 write 后 |
+| 数据传输 | `stats.add_bytes(sent, recv)` | relay_bidirectional 返回值中 |
 
 GUI 在 Home 视图展示：活跃连接数、总连接数、上传/下载流量（人类可读格式）。
+
+```mermaid
+sequenceDiagram
+    participant App as 用户应用
+    participant S5 as Socks5Server
+    participant R as relay_bidirectional
+    participant Stats as ProxyStats
+
+    App->>S5: 新连接
+    S5->>Stats: add_connection() → active++, total++
+    S5->>R: relay_bidirectional(a, b).await
+    Note over R: 传输数据（可能传输数 MB）
+    R-->>S5: Ok((a_to_b, b_to_a))
+    S5->>Stats: add_bytes(a_to_b, b_to_a)
+    Note over Stats: ⚠️ a_to_b/b_to_a 仅反映最后一个<br/>transfer_one 周期的字节数<br/>对大传输严重低估
+    S5->>Stats: remove_connection() → active--
+```
+
+> **已知 Bug**：`bytes_sent` / `bytes_received` 因 relay 统计 Bug（§10）严重低于实际传输量。修复前，GUI 显示的 ↑/↓ 流量数字不可信。
 
 ---
 
@@ -1095,22 +1208,185 @@ flowchart LR
 
 TUN 模式拦截系统所有网络流量（需要管理员权限）：
 
-```
-[系统网络栈]
-    ↓
-[TUN 虚拟网卡（WinTun/Linux tun）]
-    ↓
-[ipstack：从 IP/TCP 数据包重建连接流]
-    ↓
-[xtune-core 路由引擎]
-    ↓ Proxy
-[TuicOutbound / Hysteria2Outbound / ...]
-    ↓
-[远端代理服务器]
+```mermaid
+flowchart TD
+    subgraph OS["操作系统网络栈"]
+        App["用户应用（浏览器等）"]
+        TCPStack["OS TCP/IP 栈"]
+    end
+
+    subgraph TUN["TUN 虚拟网卡"]
+        WinTun["WinTun.dll（Windows）\n/ Linux kernel tun"]
+        IPStack["ipstack crate\nIP 数据包 → TCP 连接流"]
+    end
+
+    subgraph Core["xtune-core"]
+        Router["路由引擎\nDomain/IP/GeoIP 匹配"]
+        Outbound["协议 Outbound\n(TUIC/Hy2/VLESS/...)"]
+    end
+
+    subgraph Remote["远端"]
+        ProxyServer["代理服务器"]
+        Target["目标网站"]
+    end
+
+    App -->|"TCP 数据包"| TCPStack
+    TCPStack -->|"路由至 TUN 接口"| WinTun
+    WinTun -->|"原始 IP 帧"| IPStack
+    IPStack -->|"重建 TCP 流"| Router
+    Router -->|"Proxy"| Outbound
+    Router -->|"Direct"| DirectTCP["直连 TCP"]
+    Router -->|"Reject"| Drop["丢弃"]
+    Outbound -->|"加密协议"| ProxyServer
+    ProxyServer -->|"转发"| Target
 ```
 
-**系统路由修改**：TUN 启动时添加默认路由 → TUN 接口；关闭时恢复。`emergency_restore_routes()` 在程序崩溃时也会被调用（panic hook）。
+**系统路由修改**：
+
+```mermaid
+sequenceDiagram
+    participant App as xtune-gui
+    participant OS as 操作系统路由表
+    participant TUN as TUN 设备
+
+    App->>TUN: 创建 TUN 设备（分配 IP 10.0.0.1/24）
+    App->>OS: ip route add 0.0.0.0/0 dev tun0
+    Note over OS: 所有流量路由至 TUN 接口
+    App->>OS: ip route add <proxy_server_ip>/32 via <原网关>
+    Note over OS: 代理服务器本身直连（避免循环）
+
+    Note over App,OS: 代理运行期间...
+
+    App->>OS: ip route del 0.0.0.0/0 dev tun0（恢复默认路由）
+    App->>TUN: 关闭 TUN 设备
+```
+
+**紧急恢复**：`emergency_restore_routes()` 在以下情况被调用：
+- 正常关闭（`cleanup_on_exit()`）
+- `Ctrl+C` 信号处理
+- Windows `CTRL_CLOSE_EVENT` / `CTRL_SHUTDOWN_EVENT`
+- panic hook
 
 ---
 
-*文档生成时间：基于当前 commit `3646ea7`*
+## 21. 并发模型：GPUI + tokio
+
+```mermaid
+graph TB
+    subgraph MainThread["主线程（GPUI 事件循环）"]
+        GPUI["GPUI Runtime\n(GPU 渲染 + 事件分发)"]
+        AppState["AppState\n(所有 GUI 状态的唯一 owner)"]
+        GPUI -->|"cx.update()"| AppState
+    end
+
+    subgraph TokioPool["tokio 运行时（2 worker 线程）"]
+        W1["Worker Thread 1"]
+        W2["Worker Thread 2"]
+        Tasks["并发任务池\n• 延迟测试任务 (×N)\n• 连通性验证任务\n• 订阅拉取任务\n• ProxyService 网络任务"]
+        W1 & W2 --> Tasks
+    end
+
+    subgraph ProxyTasks["ProxyService 任务（tokio spawn）"]
+        SOCKS5T["Socks5Server task\n监听 127.0.0.1:1080"]
+        HTTPT["HttpProxyServer task\n监听 127.0.0.1:1087"]
+        ConnTasks["每个连接 → 独立 task\nrelay_bidirectional"]
+        SOCKS5T & HTTPT --> ConnTasks
+    end
+
+    AppState -->|"tokio_handle.spawn(async { ... })"| Tasks
+    Tasks -->|"weak_handle.update(cx, |this, cx| ...);\n回调到主线程"| AppState
+    Tasks --> ProxyTasks
+```
+
+**线程安全保证**：
+
+| 组件 | 线程 | 访问方式 |
+|------|------|---------|
+| `AppState` 所有字段 | 仅 GPUI 主线程 | `cx.update()` 序列化 |
+| `ProxyStats` | 任意线程 | `AtomicU64` |
+| `TuicOutbound.state` | 任意 tokio 线程 | `tokio::RwLock` |
+| `ConnPool.connections` | 任意 tokio 线程 | `tokio::Mutex` |
+| `DnsResolver.cache` | 任意 tokio 线程 | `tokio::Mutex` |
+| `Router.cache` | 任意 tokio 线程 | `tokio::RwLock` |
+
+**tokio workers 固定为 2**（`main.rs` 硬编码）：对代理场景（I/O 密集）够用；纯 CPU 密集型任务（GeoIP 匹配 + 路由规则遍历）在 2 个 worker 上轻度竞争。
+
+---
+
+## 22. 订阅管理流程
+
+```mermaid
+flowchart TD
+    A["用户点击「刷新订阅」"] --> B["GUI spawn tokio task"]
+    B --> C["fetch_subscription(sub)"]
+    C --> D["reqwest GET {sub.url}\n超时 30s\nUser-Agent: XTune/0.1\n允许无效证书"]
+    D --> E{"HTTP 状态?"}
+    E -->|"非 2xx"| F["Err: Subscription returned HTTP {status}"]
+    E -->|"2xx"| G["读取响应体文本"]
+    G --> H["parse_subscription_content(content, format_hint)"]
+    H --> I{"format_hint?"}
+    I -->|"clash"| J["parse_clash_config()"]
+    I -->|"singbox"| K["parse_singbox_config()"]
+    I -->|"v2ray"| L["parse_v2ray_config()"]
+    I -->|"base64"| M["parse_base64_lines()"]
+    I -->|"auto"| N["detect_format()"]
+    N --> O{"内容特征?"}
+    O -->|"proxies: 开头"| J
+    O -->|"{ + outbounds"| K
+    O -->|"{ + inbounds"| L
+    O -->|"first line 含 ://"| P["parse_plain_lines()"]
+    O -->|"纯 Base64 字符"| Q["Base64 解码 → 递归检测"]
+    Q --> J & P
+    J & K & L & P & M --> R["Vec<Node>"]
+    R --> S["GUI 主线程: 合并节点列表"]
+    S --> T["persist_gui_state()"]
+```
+
+**支持的节点 URI 格式**：`vmess://`、`vless://`、`trojan://`、`ss://`（AES/2022）、`hysteria2://`/`hy2://`、`tuic://`
+
+---
+
+## 23. RetryOutbound 退避时序
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Retry as RetryOutbound (max=3)
+    participant Inner as 内层 Outbound (TCP)
+    participant Server as 代理服务器
+
+    Caller->>Retry: connect(host, port)
+
+    Note over Retry: attempt 1 (立即)
+    Retry->>Inner: connect()
+    Inner->>Server: TCP 连接 [超时 10s]
+    Server-->>Inner: Err / timeout
+    Inner-->>Retry: Err
+
+    Note over Retry: sleep 200ms (base_delay * 2^0)
+    Retry->>Retry: sleep(200ms)
+
+    Note over Retry: attempt 2
+    Retry->>Inner: connect()
+    Inner->>Server: TCP 连接 [超时 10s]
+    Server-->>Inner: Err / timeout
+    Inner-->>Retry: Err
+
+    Note over Retry: sleep min(200ms*2, 2000ms) = 400ms
+    Retry->>Retry: sleep(400ms)
+
+    Note over Retry: attempt 3
+    Retry->>Inner: connect()
+    Inner->>Server: TCP 连接 [超时 10s]
+    Server-->>Inner: Ok(stream)
+    Inner-->>Retry: Ok(stream)
+    Retry-->>Caller: Ok(BoxProxyStream)
+
+    Note over Retry,Caller: 最坏情况: 10s + 200ms + 10s + 400ms + 10s = 30.6s
+```
+
+**仅 TCP 协议使用 RetryOutbound**；QUIC 协议（TUIC/Hysteria2）内部管理重连，最坏情况 14s（2 地址 × 2 尝试 × 7s 超时）。
+
+---
+
+*文档生成时间：基于 commit `e5d05d8`*
