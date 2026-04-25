@@ -100,6 +100,9 @@ pub struct AppState {
 
     // TUN mode
     tun_enabled: bool,
+    /// True between start_tun() spawning the task and tun_enabled being set.
+    /// Guards against a second start_tun() call racing during the 15 s startup.
+    tun_starting: bool,
     tun_status: String,
     tun_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
 
@@ -271,6 +274,7 @@ impl AppState {
             proxy_stop_tx: None,
             proxy_validation_cancel_tx: None,
             tun_enabled: false,
+            tun_starting: false,
             tun_status: "Disabled".to_string(),
             tun_stop_tx: None,
             rules: persisted.rules.clone(),
@@ -904,7 +908,7 @@ impl AppState {
 
     #[allow(dead_code)]
     fn toggle_tun(&mut self, cx: &mut Context<Self>) {
-        if self.tun_enabled {
+        if self.tun_enabled || self.tun_starting {
             self.stop_tun(cx);
         } else {
             self.start_tun(cx);
@@ -912,7 +916,9 @@ impl AppState {
     }
 
     fn start_tun(&mut self, cx: &mut Context<Self>) {
-        if self.tun_enabled {
+        // Guard against re-entry: block if already running OR if the startup
+        // task is still in-flight (tun_enabled is false during the ~15 s setup).
+        if self.tun_enabled || self.tun_starting {
             return;
         }
         if !self.proxy_running {
@@ -956,6 +962,7 @@ impl AppState {
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         self.tun_stop_tx = Some(stop_tx);
+        self.tun_starting = true;
         self.tun_status = "Preparing TUN driver...".to_string();
         cx.notify();
 
@@ -974,6 +981,7 @@ impl AppState {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => {
                         weak.update(cx, |this: &mut AppState, cx| {
+                            this.tun_starting = false;
                             this.tun_stop_tx = None;
                             this.tun_status = format!("❌ WinTun install failed: {:#}", e);
                             cx.notify();
@@ -983,6 +991,7 @@ impl AppState {
                     }
                     Err(e) => {
                         weak.update(cx, |this: &mut AppState, cx| {
+                            this.tun_starting = false;
                             this.tun_stop_tx = None;
                             this.tun_status = format!("❌ WinTun task error: {}", e);
                             cx.notify();
@@ -1027,6 +1036,7 @@ impl AppState {
             match result {
                 Ok(Ok((tun_proxy, route_guard))) => {
                     weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_starting = false;
                         this.tun_enabled = true;
                         this.tun_status = "✅ TUN active — all traffic proxied".to_string();
                         cx.notify();
@@ -1049,6 +1059,7 @@ impl AppState {
                 }
                 Ok(Err(e)) => {
                     weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_starting = false;
                         this.tun_stop_tx = None;
                         this.tun_status = format!("❌ {}", e);
                         cx.notify();
@@ -1057,6 +1068,7 @@ impl AppState {
                 }
                 Err(e) => {
                     weak.update(cx, |this: &mut AppState, cx| {
+                        this.tun_starting = false;
                         this.tun_stop_tx = None;
                         this.tun_status = format!("❌ {}", e);
                         cx.notify();
@@ -1197,6 +1209,39 @@ impl AppState {
             self.active_proxy_node = self.nodes.iter().position(|n| n.name == name);
         }
         self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn sort_nodes_alphabetically(&mut self, cx: &mut Context<Self>) {
+        let selected_name = self
+            .selected_node
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| n.name.clone());
+        let active_name = self
+            .active_proxy_node
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| n.name.clone());
+
+        self.nodes.sort_by(|a, b| a.name.cmp(&b.name));
+
+        if let Some(name) = selected_name {
+            self.selected_node = self.nodes.iter().position(|n| n.name == name);
+        }
+        if let Some(name) = active_name {
+            self.active_proxy_node = self.nodes.iter().position(|n| n.name == name);
+        }
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn clear_node_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.node_filter.is_empty() {
+            return;
+        }
+        self.node_filter_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        self.node_filter.clear();
         cx.notify();
     }
 
@@ -1361,6 +1406,18 @@ impl AppState {
                 sub_index,
                 last_err
             );
+            // Show failure in the import status bar so the user sees it in the Config tab.
+            weak.update(cx, |this: &mut AppState, cx| {
+                let name = this
+                    .subscriptions
+                    .get(sub_index)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| "subscription".to_string());
+                this.import_status =
+                    format!("⚠ Refresh failed for '{}': {}", name, last_err);
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }
@@ -2229,6 +2286,15 @@ impl AppState {
                             .flex_row()
                             .gap_2()
                             .child(
+                                Button::new("sort-alpha-btn")
+                                    .label("A→Z".to_string())
+                                    .tooltip("Sort nodes alphabetically by name")
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sort_nodes_alphabetically(cx);
+                                    })),
+                            )
+                            .child(
                                 Button::new("sort-latency-btn")
                                     .label("📊 Sort by Latency".to_string())
                                     .tooltip("Sort nodes by latency (fastest first)")
@@ -2261,7 +2327,26 @@ impl AppState {
             .child(
                 div()
                     .w_full()
-                    .child(gpui_component::input::Input::new(&node_filter_input).w_full()),
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(gpui_component::input::Input::new(&node_filter_input).w_full()),
+                    )
+                    .child({
+                        let has_filter = !self.node_filter.is_empty();
+                        Button::new("clear-filter-btn")
+                            .label("✕".to_string())
+                            .tooltip("Clear filter")
+                            .ghost()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.clear_node_filter(window, cx);
+                            }))
+                            .when(!has_filter, |b| b.disabled(true))
+                    }),
             );
 
         if node_count == 0 {
