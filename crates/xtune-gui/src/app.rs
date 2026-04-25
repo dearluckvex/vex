@@ -1190,7 +1190,7 @@ impl AppState {
 
     fn select_node(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_node = Some(index);
-        self.persist_gui_state();
+        self.schedule_persist(cx);
         cx.notify();
     }
 
@@ -1210,6 +1210,12 @@ impl AppState {
 
     fn activate_node(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_node = Some(index);
+
+        // Already connected to this node — nothing to do.
+        if self.proxy_running && self.active_proxy_node == Some(index) {
+            cx.notify();
+            return;
+        }
 
         if self.proxy_running {
             self.restart_proxy_with_current_state(cx);
