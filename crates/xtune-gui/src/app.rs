@@ -1,5 +1,7 @@
 use gpui::*;
+use gpui::prelude::FluentBuilder as _;
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::Disableable as _;
 use gpui_component::input::InputState;
 use gpui_component::tag::{Tag, TagVariant};
 use std::path::PathBuf;
@@ -89,6 +91,12 @@ pub struct AppState {
 
     // Proxy stats
     proxy_stats: Option<ProxyStats>,
+    /// Snapshot for computing bandwidth speed: (bytes_up, bytes_down, instant)
+    prev_bandwidth_snapshot: Option<(u64, u64, std::time::Instant)>,
+    /// Computed upload speed in bytes/sec
+    upload_speed_bps: f64,
+    /// Computed download speed in bytes/sec
+    download_speed_bps: f64,
 
     // Tokio runtime handle
     tokio_handle: tokio::runtime::Handle,
@@ -144,6 +152,9 @@ pub struct AppState {
 
     // Log viewer
     log_buffer: SharedLogBuffer,
+    log_level_filter: tracing::Level,
+    log_filter: String,
+    log_filter_input: Entity<InputState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,18 +186,23 @@ fn current_system_proxy_state() -> (bool, String) {
 }
 
 fn rule_mode_ruleset(rules: &[RoutingRule]) -> RuleSet {
-    if rules.is_empty() {
+    let enabled: Vec<RoutingRule> = rules.iter().filter(|r| r.enabled).cloned().collect();
+    if enabled.is_empty() {
         china_direct_ruleset()
     } else {
-        RuleSet::from_config(rules)
+        RuleSet::from_config(&enabled)
     }
 }
 
 fn rule_mode_summary(rules: &[RoutingRule]) -> String {
-    if rules.is_empty() {
+    let enabled = rules.iter().filter(|r| r.enabled).count();
+    let total = rules.len();
+    if total == 0 {
         "Built-in China direct rules".to_string()
+    } else if enabled < total {
+        format!("{} rule(s) active, {} disabled", enabled, total - enabled)
     } else {
-        format!("{} custom rule(s)", rules.len())
+        format!("{} custom rule(s)", total)
     }
 }
 
@@ -252,6 +268,8 @@ impl AppState {
         let node_rename_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("New node name")
         });
+        let log_filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter logs..."));
 
         let mut state = Self {
             active_view: ActiveView::Home,
@@ -281,6 +299,9 @@ impl AppState {
             system_proxy_status,
             system_proxy_managed_by_app: false,
             proxy_stats: None,
+            prev_bandwidth_snapshot: None,
+            upload_speed_bps: 0.0,
+            download_speed_bps: 0.0,
             tokio_handle,
             proxy_stop_tx: None,
             proxy_validation_cancel_tx: None,
@@ -306,6 +327,9 @@ impl AppState {
             editing_node_index: None,
             editing_rule_index: None,
             log_buffer,
+            log_level_filter: tracing::Level::INFO,
+            log_filter: String::new(),
+            log_filter_input,
         };
         state.start_auto_refresh(cx);
         state
@@ -392,6 +416,9 @@ impl AppState {
         self.proxy_stop_tx = Some(stop_tx);
         self.proxy_validation_cancel_tx = Some(validation_cancel_tx);
         self.proxy_stats = Some(stats);
+        self.prev_bandwidth_snapshot = None;
+        self.upload_speed_bps = 0.0;
+        self.download_speed_bps = 0.0;
         self.proxy_running = true;
         self.proxy_status = "Connecting...".to_string();
         self.proxy_validation_status = "Waiting for local proxy startup".to_string();
@@ -1260,6 +1287,17 @@ impl AppState {
         cx.notify();
     }
 
+    fn clear_log_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.log_filter.is_empty() {
+            return;
+        }
+        self.log_filter_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        self.log_filter.clear();
+        cx.notify();
+    }
+
     // === Node Selection ===
 
     fn select_node(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1808,6 +1846,28 @@ impl AppState {
             .map(|s| s.bytes_received())
             .unwrap_or(0);
 
+        // Compute bandwidth speed from delta since last render
+        let now = std::time::Instant::now();
+        if self.proxy_running {
+            if let Some((prev_up, prev_down, prev_time)) = self.prev_bandwidth_snapshot {
+                let dt = now.duration_since(prev_time).as_secs_f64();
+                if dt >= 0.5 {
+                    self.upload_speed_bps = (bytes_up.saturating_sub(prev_up)) as f64 / dt;
+                    self.download_speed_bps =
+                        (bytes_down.saturating_sub(prev_down)) as f64 / dt;
+                    self.prev_bandwidth_snapshot = Some((bytes_up, bytes_down, now));
+                }
+            } else {
+                self.prev_bandwidth_snapshot = Some((bytes_up, bytes_down, now));
+            }
+        } else {
+            self.prev_bandwidth_snapshot = None;
+            self.upload_speed_bps = 0.0;
+            self.download_speed_bps = 0.0;
+        }
+        let upload_speed = self.upload_speed_bps;
+        let download_speed = self.download_speed_bps;
+
         let cur_mode = self.proxy_mode.clone();
 
         // Derive startup phase from existing status strings (no extra field needed):
@@ -2116,6 +2176,7 @@ impl AppState {
                             }
                         }),
                 )
+            )
             })
             // Proxy info card
             .child(
@@ -2166,7 +2227,17 @@ impl AppState {
                             .child(self.stat_item("Total", &total_conn.to_string()))
                             .child(self.stat_item("Nodes", &self.nodes.len().to_string()))
                             .child(self.stat_item("↑ Upload", &format_bytes(bytes_up)))
-                            .child(self.stat_item("↓ Download", &format_bytes(bytes_down))),
+                            .child(self.stat_item("↓ Download", &format_bytes(bytes_down)))
+                            .when(self.proxy_running, |d| {
+                                d.child(self.stat_item(
+                                    "↑ Speed",
+                                    &format_speed(upload_speed),
+                                ))
+                                .child(self.stat_item(
+                                    "↓ Speed",
+                                    &format_speed(download_speed),
+                                ))
+                            }),
                     ),
             )
             // Protocols card
@@ -2548,6 +2619,14 @@ impl AppState {
                 }
             });
 
+        // Subscription source badge
+        let sub_badge: Option<String> = node.extra.get("sub_url").and_then(|url| {
+            self.subscriptions
+                .iter()
+                .find(|s| &s.url == url)
+                .map(|s| s.name.clone())
+        });
+
         let bg = if is_active {
             rgb(BG_ACCENT_SUBTLE)
         } else if is_selected {
@@ -2614,9 +2693,28 @@ impl AppState {
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(rgb(TEXT_SECONDARY))
-                            .child(server),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_SECONDARY))
+                                    .child(server),
+                            )
+                            .when_some(sub_badge, |d, badge| {
+                                d.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(ACCENT_DIM))
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded(px(3.0))
+                                        .bg(rgb(BG_ACCENT_SUBTLE))
+                                        .child(badge),
+                                )
+                            }),
                     ),
             )
             .child(
@@ -3114,6 +3212,7 @@ impl AppState {
             rule_type: rule_type.trim().to_string(),
             pattern: pattern.trim().to_string(),
             target: target.trim().to_string(),
+            enabled: true,
         };
 
         let action_msg = if let Some(edit_idx) = self.editing_rule_index.take() {
@@ -3221,72 +3320,86 @@ impl AppState {
                 rule_type: "geoip".into(),
                 pattern: "CN".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "cn".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "baidu.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "qq.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "taobao.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "aliyun.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "jd.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "163.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "bilibili.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "zhihu.com".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "10.0.0.0/8".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "172.16.0.0/12".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "192.168.0.0/16".into(),
                 target: "direct".into(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "match".into(),
                 pattern: "*".into(),
                 target: "proxy".into(),
-            },
+                enabled: true,
+        },
         ];
         self.rules = china_rules;
         self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
@@ -3539,6 +3652,7 @@ impl AppState {
 
     fn render_rule_item(&mut self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let rule = &self.rules[index];
+        let is_enabled = rule.enabled;
         let type_tag = match rule.rule_type.as_str() {
             "domain" => Tag::primary().child("Domain"),
             "domain-suffix" => Tag::info().child("Suffix"),
@@ -3548,14 +3662,21 @@ impl AppState {
             "match" => Tag::secondary().child("Match"),
             _ => Tag::secondary().child(rule.rule_type.clone()),
         };
-        let target_color = match rule.target.as_str() {
-            "direct" => rgb(SUCCESS_COLOR),
-            "proxy" => rgb(ACCENT),
-            "reject" => rgb(DANGER_COLOR),
-            _ => rgb(TEXT_SECONDARY),
+        let target_color = if !is_enabled {
+            rgb(TEXT_MUTED)
+        } else {
+            match rule.target.as_str() {
+                "direct" => rgb(SUCCESS_COLOR),
+                "proxy" => rgb(ACCENT),
+                "reject" => rgb(DANGER_COLOR),
+                _ => rgb(TEXT_SECONDARY),
+            }
         };
         let pattern = rule.pattern.clone();
         let target = rule.target.clone();
+        let text_color = if is_enabled { rgb(TEXT_PRIMARY) } else { rgb(TEXT_MUTED) };
+        let toggle_label = if is_enabled { "●" } else { "○" };
+        let toggle_tooltip = if is_enabled { "Disable rule" } else { "Enable rule" };
 
         div()
             .id(SharedString::from(format!("rule-{}", index)))
@@ -3569,6 +3690,7 @@ impl AppState {
             .border_1()
             .border_color(rgb(BORDER_COLOR))
             .shadow_sm()
+            .when(!is_enabled, |d| d.opacity(0.55))
             .hover(|s| s.bg(rgb(BG_CARD_HOVER)).border_color(rgb(ACCENT_DIM)))
             .child(
                 div()
@@ -3583,6 +3705,7 @@ impl AppState {
                     .flex_1()
                     .text_sm()
                     .font(localized_font())
+                    .text_color(text_color)
                     .child(pattern),
             )
             .child(
@@ -3598,6 +3721,22 @@ impl AppState {
                     .flex()
                     .flex_row()
                     .gap_1()
+                    .child(
+                        Button::new(("rule-toggle", index))
+                            .label(toggle_label.to_string())
+                            .tooltip(toggle_tooltip)
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(rule) = this.rules.get_mut(index) {
+                                    rule.enabled = !rule.enabled;
+                                }
+                                this.persist_gui_state();
+                                if this.proxy_running && this.proxy_mode == ProxyMode::Rule {
+                                    this.restart_proxy_with_current_state(cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Button::new(("rule-up", index))
                             .label("▲".to_string())
@@ -3648,7 +3787,57 @@ impl AppState {
             .map(|buf| buf.iter().rev().cloned().collect())
             .unwrap_or_default();
 
-        let count = entries.len();
+        let total_count = entries.len();
+        let current_level = self.log_level_filter;
+
+        // Sync filter from InputState (same pattern as node filter)
+        let filter_text = self.log_filter_input.read(cx).value().trim().to_lowercase();
+        if filter_text != self.log_filter {
+            self.log_filter = filter_text;
+        }
+        let log_filter = self.log_filter.to_lowercase();
+
+        // Apply both level and text filters
+        let filtered: Vec<&crate::log_buffer::LogEntry> = entries
+            .iter()
+            .filter(|e| {
+                // Level filter: only show entries at or above the selected level
+                let level_ok = e.level <= current_level;
+                let text_ok = log_filter.is_empty()
+                    || e.message.to_lowercase().contains(&log_filter)
+                    || e.target.to_lowercase().contains(&log_filter);
+                level_ok && text_ok
+            })
+            .collect();
+
+        let filtered_count = filtered.len();
+        let log_filter_input = self.log_filter_input.clone();
+
+        let level_chips = {
+            let levels: &[(&str, tracing::Level, u32)] = &[
+                ("ERR", tracing::Level::ERROR, DANGER_COLOR),
+                ("WRN", tracing::Level::WARN, WARNING_COLOR),
+                ("INF", tracing::Level::INFO, SUCCESS_COLOR),
+                ("DBG", tracing::Level::DEBUG, TEXT_MUTED),
+            ];
+            let mut row = div().flex().flex_row().gap_1();
+            for &(label, level, color) in levels {
+                let is_active = current_level == level;
+                let btn = Button::new(SharedString::from(format!("log-lvl-{}", label)))
+                    .label(label.to_string())
+                    .when(is_active, |b| b.primary())
+                    .when(!is_active, |b| b.ghost())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.log_level_filter = level;
+                        cx.notify();
+                    }));
+                let chip = div()
+                    .when(!is_active, |d| d.text_color(rgb(color)))
+                    .child(btn);
+                row = row.child(chip);
+            }
+            row
+        };
 
         let mut content = div().flex().flex_col().gap_5().child(
             div()
@@ -3671,7 +3860,11 @@ impl AppState {
                                 .py_0p5()
                                 .rounded(px(4.0))
                                 .bg(rgb(BG_ACCENT_SUBTLE))
-                                .child(format!("{}", count)),
+                                .child(if log_filter.is_empty() && filtered_count == total_count {
+                                    format!("{}", total_count)
+                                } else {
+                                    format!("{}/{}", filtered_count, total_count)
+                                }),
                         ),
                 )
                 .child(
@@ -3701,9 +3894,35 @@ impl AppState {
                                 })),
                         ),
                 ),
+        )
+        // Level filter chips + text search row
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(level_chips)
+                .child(
+                    div()
+                        .flex_1()
+                        .child(
+                            gpui_component::input::Input::new(&log_filter_input).w_full(),
+                        ),
+                )
+                .when(!self.log_filter.is_empty(), |d| {
+                    d.child(
+                        Button::new("clear-log-filter")
+                            .label("✕".to_string())
+                            .ghost()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.clear_log_filter(window, cx);
+                            })),
+                    )
+                }),
         );
 
-        if entries.is_empty() {
+        if filtered.is_empty() {
             content = content.child(
                 self.card().child(
                     div()
@@ -3716,13 +3935,21 @@ impl AppState {
                             div()
                                 .text_lg()
                                 .text_color(rgb(TEXT_SECONDARY))
-                                .child("No log entries yet"),
+                                .child(if total_count == 0 {
+                                    "No log entries yet"
+                                } else {
+                                    "No entries match the filter"
+                                }),
                         )
                         .child(
                             div()
                                 .text_sm()
                                 .text_color(rgb(TEXT_MUTED))
-                                .child("Logs will appear here as the proxy operates"),
+                                .child(if total_count == 0 {
+                                    "Logs will appear here as the proxy operates"
+                                } else {
+                                    "Try a different level or clear the search filter"
+                                }),
                         ),
                 ),
             );
@@ -3737,7 +3964,7 @@ impl AppState {
                 .border_1()
                 .border_color(rgb(BORDER_COLOR));
 
-            for (log_idx, entry) in entries.iter().take(200).enumerate() {
+            for (log_idx, entry) in filtered.iter().take(200).enumerate() {
                 let (level_label, level_color) = match entry.level {
                     tracing::Level::ERROR => ("ERR", DANGER_COLOR),
                     tracing::Level::WARN => ("WRN", WARNING_COLOR),
@@ -4212,7 +4439,7 @@ fn render_proxy_steps(phase: u8) -> Div {
             TEXT_MUTED
         };
         div()
-            .text_2xs()
+            .text_xs()
             .text_color(rgb(color))
             .child(text.to_string())
     };
@@ -4256,6 +4483,21 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+fn format_speed(bps: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    if bps >= GB {
+        format!("{:.1} GB/s", bps / GB)
+    } else if bps >= MB {
+        format!("{:.1} MB/s", bps / MB)
+    } else if bps >= KB {
+        format!("{:.1} KB/s", bps / KB)
+    } else {
+        format!("{:.0} B/s", bps)
     }
 }
 
@@ -4656,12 +4898,14 @@ mod tests {
                 rule_type: "domain-suffix".to_string(),
                 pattern: "example.com".to_string(),
                 target: "reject".to_string(),
-            },
+                enabled: true,
+        },
             RoutingRule {
                 rule_type: "match".to_string(),
                 pattern: "*".to_string(),
                 target: "proxy".to_string(),
-            },
+                enabled: true,
+        },
         ];
 
         let router = Router::new(rule_mode_ruleset(&rules));

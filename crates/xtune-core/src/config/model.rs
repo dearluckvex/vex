@@ -244,6 +244,13 @@ pub struct RoutingRule {
     pub pattern: String,
     /// Target: "direct", "proxy", "reject"
     pub target: String,
+    /// Whether this rule is active (defaults to true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]

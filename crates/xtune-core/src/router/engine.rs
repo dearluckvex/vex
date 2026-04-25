@@ -380,21 +380,25 @@ mod tests {
                 rule_type: "domain-suffix".into(),
                 pattern: "cn".into(),
                 target: "direct".into(),
+                enabled: true,
             },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "192.168.0.0/16".into(),
                 target: "direct".into(),
+                enabled: true,
             },
             RoutingRule {
                 rule_type: "domain-keyword".into(),
                 pattern: "google".into(),
                 target: "proxy".into(),
+                enabled: true,
             },
             RoutingRule {
                 rule_type: "match".into(),
                 pattern: "".into(),
                 target: "proxy".into(),
+                enabled: true,
             },
         ];
 
