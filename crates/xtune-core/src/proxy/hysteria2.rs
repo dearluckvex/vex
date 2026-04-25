@@ -19,6 +19,10 @@ use crate::config::model::TlsConfig;
 
 use super::connector::{BoxProxyStream, Outbound};
 
+const HY2_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(7);
+const HY2_CONNECT_ATTEMPTS_PER_ADDR: usize = 2;
+const HY2_CONNECT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Hysteria2 outbound connector.
 ///
 /// Uses QUIC (quinn) for transport with HTTP/3 authentication and
@@ -108,42 +112,76 @@ impl Hysteria2Outbound {
         transport.send_window(16 * 1024 * 1024);
         client_config.transport_config(Arc::new(transport));
 
-        let addr = resolve_server(&self.server, self.port).await?;
+        let addrs = resolve_server_addrs(&self.server, self.port).await?;
         tracing::debug!(
-            "Hysteria2 resolved {}:{} -> {}",
+            "Hysteria2 resolved {}:{} -> {:?}",
             self.server,
             self.port,
-            addr
+            addrs
         );
 
-        // Bind to matching address family
-        let bind_addr: std::net::SocketAddr = if addr.is_ipv4() {
-            "0.0.0.0:0".parse()?
-        } else {
-            "[::]:0".parse()?
-        };
-        let mut endpoint = quinn::Endpoint::client(bind_addr)?;
-        endpoint.set_default_client_config(client_config);
+        let mut last_err = None;
 
-        let connecting = endpoint.connect(addr, &self.sni)?;
-        let connection = tokio::time::timeout(std::time::Duration::from_secs(15), connecting)
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Hysteria2 connection to {}:{} timed out (UDP may be blocked by firewall)",
-                    self.server,
-                    self.port
-                )
-            })??;
+        for addr in addrs {
+            for attempt in 1..=HY2_CONNECT_ATTEMPTS_PER_ADDR {
+                let bind_addr: std::net::SocketAddr = if addr.is_ipv4() {
+                    "0.0.0.0:0".parse()?
+                } else {
+                    "[::]:0".parse()?
+                };
+                let mut endpoint = quinn::Endpoint::client(bind_addr)?;
+                endpoint.set_default_client_config(client_config.clone());
 
-        tracing::info!(
-            "Hysteria2 QUIC connection established to {}:{} ({})",
-            self.server,
-            self.port,
-            addr,
-        );
+                let connecting = endpoint.connect(addr, &self.sni)?;
+                match tokio::time::timeout(HY2_CONNECT_TIMEOUT, connecting).await {
+                    Ok(Ok(connection)) => {
+                        tracing::info!(
+                            "Hysteria2 QUIC connection established to {}:{} ({}) on attempt {}/{}",
+                            self.server,
+                            self.port,
+                            addr,
+                            attempt,
+                            HY2_CONNECT_ATTEMPTS_PER_ADDR
+                        );
+                        return Ok((endpoint, connection));
+                    }
+                    Ok(Err(err)) => {
+                        last_err = Some(anyhow::anyhow!(
+                            "Hysteria2 QUIC to {}:{} via {} failed on attempt {}/{}: {}",
+                            self.server,
+                            self.port,
+                            addr,
+                            attempt,
+                            HY2_CONNECT_ATTEMPTS_PER_ADDR,
+                            err
+                        ));
+                    }
+                    Err(_) => {
+                        last_err = Some(anyhow::anyhow!(
+                            "Hysteria2 QUIC to {}:{} via {} timed out on attempt {}/{} after {}s",
+                            self.server,
+                            self.port,
+                            addr,
+                            attempt,
+                            HY2_CONNECT_ATTEMPTS_PER_ADDR,
+                            HY2_CONNECT_TIMEOUT.as_secs()
+                        ));
+                    }
+                }
 
-        Ok((endpoint, connection))
+                if attempt < HY2_CONNECT_ATTEMPTS_PER_ADDR {
+                    tokio::time::sleep(HY2_CONNECT_RETRY_BACKOFF).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            anyhow::anyhow!(
+                "Hysteria2 QUIC connection to {}:{} failed without a concrete error",
+                self.server,
+                self.port
+            )
+        }))
     }
 
     /// Authenticate via HTTP/3 POST /auth request.
@@ -200,47 +238,59 @@ impl Outbound for Hysteria2Outbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let host = host.to_string();
         Box::pin(async move {
-            let conn = self.get_connection().await?;
-
-            // Open bidirectional stream for this TCP connection
-            let (mut send, mut recv) = conn.open_bi().await?;
-
-            // Hysteria2 TCP request (per protocol spec):
-            //   varint 0x401 (TCPRequest ID)
-            //   varint address_length
-            //   bytes  address string ("host:port")
-            //   varint padding_length (0)
-            //   bytes  padding (empty)
             let addr_str = format!("{}:{}", host, port);
-            let addr_bytes = addr_str.as_bytes();
 
-            write_varint(&mut send, 0x0401).await?;
-            write_varint(&mut send, addr_bytes.len() as u64).await?;
-            send.write_all(addr_bytes).await?;
-            write_varint(&mut send, 0).await?; // no padding
-            send.flush().await?;
+            // Two attempts: handles the race where the cached QUIC connection
+            // dies between get_connection() and open_bi() (stale connection).
+            let mut last_err = anyhow::anyhow!("Hysteria2: no connection attempt made");
+            for attempt in 1u8..=2 {
+                let conn = self.get_connection().await?;
+                let (mut send, mut recv) = match conn.open_bi().await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        last_err = anyhow::anyhow!(
+                            "Hysteria2 open_bi failed (attempt {}): {}",
+                            attempt,
+                            e
+                        );
+                        tracing::debug!("{last_err} — will retry with fresh connection");
+                        continue;
+                    }
+                };
 
-            // Read the server's TCPResponse:
-            //   uint8  status (0x00 = OK, 0x01 = Error)
-            //   varint message_length
-            //   bytes  message string
-            //   varint padding_length
-            //   bytes  padding
-            let mut status_buf = [0u8; 1];
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                recv.read_exact(&mut status_buf),
-            )
-            .await;
+                // Hysteria2 TCP request (per protocol spec):
+                //   varint 0x401 (TCPRequest ID)
+                //   varint address_length
+                //   bytes  address string ("host:port")
+                //   varint padding_length (0)
+                //   bytes  padding (empty)
+                let addr_bytes = addr_str.as_bytes();
+                write_varint(&mut send, 0x0401).await?;
+                write_varint(&mut send, addr_bytes.len() as u64).await?;
+                send.write_all(addr_bytes).await?;
+                write_varint(&mut send, 0).await?; // no padding
+                send.flush().await?;
 
-            if status_buf[0] == 0x01 {
-                bail!("Hysteria2 TCP connect to {} rejected by server", addr_str);
+                // Read the server's TCPResponse:
+                //   uint8  status (0x00 = OK, 0x01 = Error)
+                //   varint message_length + bytes message string + varint padding
+                let mut status_buf = [0u8; 1];
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    recv.read_exact(&mut status_buf),
+                )
+                .await;
+
+                if status_buf[0] == 0x01 {
+                    bail!("Hysteria2 TCP connect to {} rejected by server", addr_str);
+                }
+
+                tracing::debug!("Hysteria2 TCP connect to {}", addr_str);
+
+                let stream = Hy2BidiStream { send, recv };
+                return Ok(Box::new(stream) as BoxProxyStream);
             }
-
-            tracing::debug!("Hysteria2 TCP connect to {}", addr_str);
-
-            let stream = Hy2BidiStream { send, recv };
-            Ok(Box::new(stream) as BoxProxyStream)
+            Err(last_err)
         })
     }
 
@@ -357,16 +407,17 @@ fn build_quic_client_config(
     Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
 }
 
-/// Resolve server hostname to SocketAddr, preferring IPv4.
-async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr> {
+/// Resolve server hostname to all SocketAddr candidates, preferring IPv4 first.
+async fn resolve_server_addrs(server: &str, port: u16) -> Result<Vec<SocketAddr>> {
     use tokio::net::lookup_host;
-    let addrs: Vec<_> = lookup_host(format!("{}:{}", server, port)).await?.collect();
-    addrs
-        .iter()
-        .find(|a| a.is_ipv4())
-        .or(addrs.first())
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("Failed to resolve {}", server))
+    let mut addrs: Vec<_> = lookup_host(format!("{}:{}", server, port)).await?.collect();
+    // Sort IPv4 first, then dedup
+    addrs.sort_by_key(|a| if a.is_ipv4() { 0u8 } else { 1 });
+    addrs.dedup();
+    if addrs.is_empty() {
+        anyhow::bail!("Failed to resolve {}", server);
+    }
+    Ok(addrs)
 }
 
 /// Insecure certificate verifier for skip_cert_verify option.

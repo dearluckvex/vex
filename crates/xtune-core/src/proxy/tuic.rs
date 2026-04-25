@@ -276,21 +276,35 @@ impl Outbound for TuicOutbound {
     ) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
         let host = host.to_string();
         Box::pin(async move {
-            let conn = self.get_connection().await?;
+            // Two attempts: if open_bi() fails the connection died between
+            // get_connection() returning it and us using it (race with server
+            // closing the QUIC connection). get_connection() will detect the
+            // dead connection via close_reason() on the next call and reconnect.
+            let mut last_err = anyhow::anyhow!("TUIC: no connection attempt made");
+            for attempt in 1u8..=2 {
+                let conn = self.get_connection().await?;
+                let (mut send, recv) = match conn.open_bi().await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        last_err =
+                            anyhow::anyhow!("TUIC open_bi failed (attempt {}): {}", attempt, e);
+                        tracing::debug!("{last_err} — will retry with fresh connection");
+                        continue;
+                    }
+                };
 
-            // Open bidirectional stream for this TCP connection
-            let (mut send, recv) = conn.open_bi().await?;
+                // Send Connect command — must flush so server receives it before relay data
+                send.write_u8(TUIC_VERSION).await?;
+                send.write_u8(CMD_CONNECT).await?;
+                write_address(&mut send, &host, port).await?;
+                send.flush().await?;
 
-            // Send Connect command — must flush so server receives it before relay data
-            send.write_u8(TUIC_VERSION).await?;
-            send.write_u8(CMD_CONNECT).await?;
-            write_address(&mut send, &host, port).await?;
-            send.flush().await?;
+                tracing::debug!("TUIC connect to {}:{}", host, port);
 
-            tracing::debug!("TUIC connect to {}:{}", host, port);
-
-            let stream = QuicBidiStream { send, recv };
-            Ok(Box::new(stream) as BoxProxyStream)
+                let stream = QuicBidiStream { send, recv };
+                return Ok(Box::new(stream) as BoxProxyStream);
+            }
+            Err(last_err)
         })
     }
 

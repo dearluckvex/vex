@@ -110,8 +110,8 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
     // Phase 1: Warmup — establish underlying connections (QUIC session, etc.)
-    let warmup = tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80)).await;
-    match warmup {
+    // Failure is non-fatal: if warmup can't connect, we still attempt the timed measurement.
+    match tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80)).await {
         Ok(Ok(mut s)) => {
             let _ = s
                 .write_all(
@@ -121,8 +121,15 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
             let mut buf = [0u8; 128];
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read(&mut buf)).await;
         }
-        Ok(Err(e)) => return Err(anyhow::anyhow!("connection failed: {:#}", e)),
-        Err(_) => return Err(anyhow::anyhow!("connection timed out ({}s)", timeout_secs)),
+        Ok(Err(e)) => {
+            tracing::debug!("http_latency_test warmup failed (non-fatal): {:#}", e);
+        }
+        Err(_) => {
+            tracing::debug!(
+                "http_latency_test warmup timed out after {}s (non-fatal)",
+                timeout_secs
+            );
+        }
     }
 
     // Phase 2: Measure — connect again using cached/warm connections
