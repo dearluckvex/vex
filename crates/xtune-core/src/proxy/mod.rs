@@ -2,6 +2,7 @@ pub mod connector;
 pub mod factory;
 pub mod http;
 pub mod hysteria2;
+pub mod quic_conn;
 pub mod pool;
 pub mod relay;
 pub mod routing;

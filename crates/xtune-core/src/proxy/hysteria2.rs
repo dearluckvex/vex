@@ -9,7 +9,6 @@ use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Once;
 use std::task::{Context, Poll};
 
 use anyhow::{Result, bail};
@@ -18,6 +17,10 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use crate::config::model::TlsConfig;
 
 use super::connector::{BoxProxyStream, Outbound};
+use super::quic_conn::{
+    QuicConnectionState, build_quic_client_config, ensure_quic_crypto_provider,
+    resolve_server_addrs,
+};
 
 const HY2_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(7);
 const HY2_CONNECT_ATTEMPTS_PER_ADDR: usize = 2;
@@ -34,7 +37,7 @@ pub struct Hysteria2Outbound {
     sni: String,
     /// Pre-built QUIC client config (avoids rebuilding root certs per reconnect)
     quic_client_config: quinn::ClientConfig,
-    state: tokio::sync::RwLock<Option<(quinn::Endpoint, quinn::Connection)>>,
+    conn_state: QuicConnectionState,
 }
 
 impl Hysteria2Outbound {
@@ -55,7 +58,7 @@ impl Hysteria2Outbound {
             .unwrap_or_else(|| vec!["h3".to_string()]);
 
         // Build QUIC TLS config once
-        ensure_crypto_provider();
+        ensure_quic_crypto_provider();
         let quic_client_config = build_quic_client_config(skip_cert_verify, &alpn)?;
 
         Ok(Self {
@@ -64,38 +67,18 @@ impl Hysteria2Outbound {
             password: password.to_string(),
             sni,
             quic_client_config,
-            state: tokio::sync::RwLock::new(None),
+            conn_state: QuicConnectionState::new(),
         })
     }
 
     /// Get or create QUIC connection with authentication.
     async fn get_connection(&self) -> Result<quinn::Connection> {
-        // Fast path: read lock to check/reuse existing connection
-        {
-            let guard = self.state.read().await;
-            if let Some((_, ref conn)) = *guard {
-                if conn.close_reason().is_none() {
-                    return Ok(conn.clone());
-                }
-            }
+        if let Some(conn) = self.conn_state.get_existing().await {
+            return Ok(conn);
         }
-
-        // Slow path: write lock to create a new connection
-        let mut guard = self.state.write().await;
-        // Double-check after acquiring write lock (another task may have reconnected)
-        if let Some((_, ref conn)) = *guard {
-            if conn.close_reason().is_none() {
-                return Ok(conn.clone());
-            }
-        }
-
         let (endpoint, conn) = self.create_connection().await?;
-        *guard = Some((endpoint, conn.clone()));
-
-        // Authenticate via HTTP/3
         self.authenticate_h3(&conn).await?;
-
-        Ok(conn)
+        Ok(self.conn_state.store_if_dead(endpoint, conn).await)
     }
 
     async fn create_connection(&self) -> Result<(quinn::Endpoint, quinn::Connection)> {
@@ -221,13 +204,6 @@ impl Hysteria2Outbound {
 
         Ok(())
     }
-}
-
-fn ensure_crypto_provider() {
-    static INSTALL_PROVIDER: Once = Once::new();
-    INSTALL_PROVIDER.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
 }
 
 impl Outbound for Hysteria2Outbound {
@@ -370,107 +346,6 @@ async fn write_varint(writer: &mut quinn::SendStream, value: u64) -> Result<()> 
     Ok(())
 }
 
-/// Globally cached root cert store for QUIC TLS (built once).
-static QUIC_ROOT_CERTS: std::sync::OnceLock<rustls::RootCertStore> = std::sync::OnceLock::new();
-
-fn get_quic_root_certs() -> &'static rustls::RootCertStore {
-    QUIC_ROOT_CERTS.get_or_init(|| {
-        let mut store = rustls::RootCertStore::empty();
-        store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        store
-    })
-}
-
-/// Build a quinn::ClientConfig with TLS settings (reusable across reconnections).
-fn build_quic_client_config(
-    skip_cert_verify: bool,
-    alpn: &[String],
-) -> Result<quinn::ClientConfig> {
-    let mut rustls_config = if skip_cert_verify {
-        rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(InsecureHy2Verifier))
-            .with_no_client_auth()
-    } else {
-        rustls::ClientConfig::builder()
-            .with_root_certificates(get_quic_root_certs().clone())
-            .with_no_client_auth()
-    };
-
-    if !alpn.is_empty() {
-        rustls_config.alpn_protocols = alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
-    }
-
-    let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
-        .map_err(|e| anyhow::anyhow!("QUIC TLS config error: {}", e))?;
-
-    Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
-}
-
-/// Resolve server hostname to all SocketAddr candidates, preferring IPv4 first.
-async fn resolve_server_addrs(server: &str, port: u16) -> Result<Vec<SocketAddr>> {
-    use tokio::net::lookup_host;
-    let mut addrs: Vec<_> = lookup_host(format!("{}:{}", server, port)).await?.collect();
-    // Sort IPv4 first, then dedup
-    addrs.sort_by_key(|a| if a.is_ipv4() { 0u8 } else { 1 });
-    addrs.dedup();
-    if addrs.is_empty() {
-        anyhow::bail!("Failed to resolve {}", server);
-    }
-    Ok(addrs)
-}
-
-/// Insecure certificate verifier for skip_cert_verify option.
-#[derive(Debug)]
-struct InsecureHy2Verifier;
-
-impl rustls::client::danger::ServerCertVerifier for InsecureHy2Verifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA512,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::ED448,
-        ]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,3 +371,4 @@ mod tests {
         assert_eq!(outbound.sni, "custom.sni.com");
     }
 }
+
