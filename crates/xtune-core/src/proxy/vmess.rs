@@ -341,8 +341,12 @@ fn build_vmess_header(
         &[b"VMess Header AEAD Nonce Length", &auth_id, &nonce],
     );
 
-    let header_length_key: [u8; 16] = header_length_key_material[..16].try_into().unwrap();
-    let header_length_nonce: [u8; 12] = header_length_nonce_material[..12].try_into().unwrap();
+    let header_length_key: [u8; 16] = header_length_key_material[..16]
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("KDF output too short for header length key"))?;
+    let header_length_nonce: [u8; 12] = header_length_nonce_material[..12]
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("KDF output too short for header length nonce"))?;
 
     let header_len = header.len() as u16;
     let cipher = Aes128Gcm::new_from_slice(&header_length_key)?;
@@ -360,8 +364,12 @@ fn build_vmess_header(
     let header_key_material = kdf(&cmd_key, &[b"VMess Header AEAD Key", &auth_id, &nonce]);
     let header_nonce_material = kdf(&cmd_key, &[b"VMess Header AEAD Nonce", &auth_id, &nonce]);
 
-    let header_key: [u8; 16] = header_key_material[..16].try_into().unwrap();
-    let header_nonce: [u8; 12] = header_nonce_material[..12].try_into().unwrap();
+    let header_key: [u8; 16] = header_key_material[..16]
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("KDF output too short for header key"))?;
+    let header_nonce: [u8; 12] = header_nonce_material[..12]
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("KDF output too short for header nonce"))?;
 
     let cipher = Aes128Gcm::new_from_slice(&header_key)?;
     let encrypted_header = cipher
