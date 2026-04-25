@@ -220,8 +220,15 @@ pub struct Subscription {
     /// Format hint: "clash", "v2ray", "karing", "auto"
     #[serde(default = "default_format")]
     pub format: String,
-    /// Last update timestamp
+    /// Last update timestamp (Unix seconds)
     pub last_updated: Option<u64>,
+    /// How often to auto-refresh (hours). 0 = manual only. Default: 24.
+    #[serde(default = "default_refresh_hours")]
+    pub refresh_interval_hours: u64,
+}
+
+fn default_refresh_hours() -> u64 {
+    24
 }
 
 fn default_format() -> String {

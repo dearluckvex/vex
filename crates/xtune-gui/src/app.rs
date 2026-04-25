@@ -3,6 +3,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::InputState;
 use gpui_component::tag::{Tag, TagVariant};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::log_buffer::SharedLogBuffer;
@@ -116,6 +117,9 @@ pub struct AppState {
     latency_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     // Debounce flag: a persist task is already scheduled (avoid 50+ writes during batch test)
     pending_persist: bool,
+
+    // Saved subscriptions (URL + metadata) for auto-refresh
+    subscriptions: Vec<Subscription>,
 
     // Manual node URI input
     node_uri_input: Entity<InputState>,
@@ -231,7 +235,7 @@ impl AppState {
                 .placeholder("vless://... or vmess://... or ss://... or trojan://...")
         });
 
-        Self {
+        let mut state = Self {
             active_view: ActiveView::Home,
             proxy_running: false,
             proxy_status: "Disconnected".to_string(),
@@ -273,10 +277,13 @@ impl AppState {
             latency_testing: std::collections::HashSet::new(),
             latency_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
             pending_persist: false,
+            subscriptions: persisted.subscriptions.clone(),
             node_uri_input,
             editing_rule_index: None,
             log_buffer,
-        }
+        };
+        state.start_auto_refresh(cx);
+        state
     }
 
     fn set_view(&mut self, view: ActiveView, cx: &mut Context<Self>) {
@@ -622,6 +629,7 @@ impl AppState {
             url: url.clone(),
             format: "auto".to_string(),
             last_updated: None,
+            refresh_interval_hours: 24,
         };
 
         cx.spawn(async move |weak, cx| {
@@ -633,6 +641,10 @@ impl AppState {
                 match result {
                     Ok(Ok(mut new_nodes)) => {
                         normalize_node_names(&mut new_nodes);
+                        // Tag nodes with source subscription URL for later refresh tracking
+                        for n in &mut new_nodes {
+                            n.extra.insert("sub_url".to_string(), url.clone());
+                        }
                         let first_new_index = this.nodes.len();
                         let count = new_nodes.len();
                         this.nodes.extend(new_nodes);
@@ -641,6 +653,22 @@ impl AppState {
                         }
                         this.import_status =
                             format!("✓ Imported {} nodes (total: {})", count, this.nodes.len());
+                        // Save subscription for auto-refresh (upsert by URL)
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        if let Some(existing) = this.subscriptions.iter_mut().find(|s| s.url == url) {
+                            existing.last_updated = Some(now);
+                        } else {
+                            this.subscriptions.push(Subscription {
+                                name: format!("Sub {}", this.subscriptions.len() + 1),
+                                url: url.clone(),
+                                format: "auto".to_string(),
+                                last_updated: Some(now),
+                                refresh_interval_hours: 24,
+                            });
+                        }
                         this.persist_gui_state();
                     }
                     Ok(Err(e)) => {
@@ -1175,7 +1203,7 @@ impl AppState {
             proxy_mode: self.proxy_mode.clone(),
             nodes: self.nodes.clone(),
             active_node: self.selected_node,
-            subscriptions: Vec::new(),
+            subscriptions: self.subscriptions.clone(),
             rules: self.rules.clone(),
         };
 
@@ -1198,6 +1226,149 @@ impl AppState {
                 this.persist_gui_state();
             })
             .ok();
+        })
+        .detach();
+    }
+
+    // === Subscription Auto-Refresh ===
+
+    /// Refresh a single subscription: replaces its nodes (by sub_url tag) with fresh ones.
+    fn refresh_subscription(&mut self, sub_index: usize, cx: &mut Context<Self>) {
+        let Some(sub) = self.subscriptions.get(sub_index).cloned() else {
+            return;
+        };
+        let handle = self.tokio_handle.clone();
+        let url = sub.url.clone();
+
+        tracing::info!("Auto-refreshing subscription: {}", sub.name);
+        cx.spawn(async move |weak, cx| {
+            // Retry up to 3 times with exponential backoff
+            let mut last_err = String::new();
+            for attempt in 0..3u32 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                }
+                let sub_clone = sub.clone();
+                match handle.spawn(async move { fetch_subscription(&sub_clone).await }).await {
+                    Ok(Ok(mut new_nodes)) => {
+                        weak.update(cx, |this: &mut AppState, cx| {
+                            normalize_node_names(&mut new_nodes);
+                            // Tag new nodes with subscription URL
+                            for n in &mut new_nodes {
+                                n.extra.insert("sub_url".to_string(), url.clone());
+                            }
+                            // Save selection/active names before removing old nodes
+                            let selected_name = this
+                                .selected_node
+                                .and_then(|i| this.nodes.get(i))
+                                .map(|n| n.name.clone());
+                            let active_name = this
+                                .active_proxy_node
+                                .and_then(|i| this.nodes.get(i))
+                                .map(|n| n.name.clone());
+
+                            // Remove stale nodes from this subscription
+                            this.nodes.retain(|n| {
+                                n.extra.get("sub_url").map_or(true, |u| u != &url)
+                            });
+
+                            let count = new_nodes.len();
+                            this.nodes.extend(new_nodes);
+
+                            // Restore selection/active by name
+                            if let Some(name) = selected_name {
+                                this.selected_node =
+                                    this.nodes.iter().position(|n| n.name == name);
+                            }
+                            if let Some(name) = active_name {
+                                this.active_proxy_node =
+                                    this.nodes.iter().position(|n| n.name == name);
+                            }
+
+                            // Update last_updated timestamp
+                            if let Some(s) = this.subscriptions.get_mut(sub_index) {
+                                s.last_updated = Some(
+                                    SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs(),
+                                );
+                            }
+                            this.import_status = format!(
+                                "✓ Refreshed '{}': {} nodes",
+                                this.subscriptions
+                                    .get(sub_index)
+                                    .map(|s| s.name.as_str())
+                                    .unwrap_or("subscription"),
+                                count
+                            );
+                            this.persist_gui_state();
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                    Ok(Err(e)) => last_err = format!("{:#}", e),
+                    Err(e) => last_err = format!("task: {:#}", e),
+                }
+            }
+            tracing::warn!(
+                "Auto-refresh of subscription {} failed after 3 attempts: {}",
+                sub_index,
+                last_err
+            );
+        })
+        .detach();
+    }
+
+    /// Refresh all subscriptions that are past their refresh_interval_hours.
+    fn check_and_refresh_stale(&mut self, cx: &mut Context<Self>) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let stale: Vec<usize> = self
+            .subscriptions
+            .iter()
+            .enumerate()
+            .filter(|(_, sub)| {
+                sub.refresh_interval_hours > 0 && {
+                    let threshold = sub.refresh_interval_hours * 3600;
+                    match sub.last_updated {
+                        None => true,
+                        Some(ts) => now.saturating_sub(ts) >= threshold,
+                    }
+                }
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        for i in stale {
+            self.refresh_subscription(i, cx);
+        }
+    }
+
+    /// Start the periodic auto-refresh background task.
+    /// Called once at startup; checks for stale subscriptions every 30 minutes.
+    fn start_auto_refresh(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |weak, cx| {
+            // Brief delay to let the UI initialize before the first refresh
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            // Initial stale check on startup
+            if let Ok(()) = weak.update(cx, |this, cx| {
+                this.check_and_refresh_stale(cx);
+            }) {}
+            // Then check every 30 minutes
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+                match weak.update(cx, |this, cx| {
+                    this.check_and_refresh_stale(cx);
+                }) {
+                    Ok(_) => {}
+                    Err(_) => break, // entity dropped, stop the loop
+                }
+            }
         })
         .detach();
     }
