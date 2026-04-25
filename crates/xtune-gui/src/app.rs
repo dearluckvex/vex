@@ -1514,16 +1514,29 @@ impl AppState {
     /// Start the periodic auto-refresh background task.
     /// Called once at startup; checks for stale subscriptions every 30 minutes.
     fn start_auto_refresh(&mut self, cx: &mut Context<Self>) {
+        let handle = self.tokio_handle.clone();
         cx.spawn(async move |weak, cx| {
-            // Brief delay to let the UI initialize before the first refresh
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            // Brief delay to let the UI initialize before the first refresh.
+            // Must run inside the tokio runtime (via handle.spawn) because
+            // gpui's own executor does not provide a tokio reactor.
+            handle
+                .spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                })
+                .await
+                .ok();
             // Initial stale check on startup
             if let Ok(()) = weak.update(cx, |this, cx| {
                 this.check_and_refresh_stale(cx);
             }) {}
             // Then check every 30 minutes
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+                    })
+                    .await
+                    .ok();
                 match weak.update(cx, |this, cx| {
                     this.check_and_refresh_stale(cx);
                 }) {
