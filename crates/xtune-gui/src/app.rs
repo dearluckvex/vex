@@ -183,7 +183,7 @@ fn rule_mode_summary(rules: &[RoutingRule]) -> String {
 }
 
 fn status_text_color(message: &str) -> u32 {
-    if message.starts_with('✓') {
+    if message.starts_with('✓') || message.starts_with('✅') {
         SUCCESS_COLOR
     } else if message.starts_with('✗') || message.starts_with('❌') {
         DANGER_COLOR
@@ -1939,6 +1939,12 @@ impl AppState {
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.stop_tun(cx);
                                         }))
+                                } else if self.tun_starting {
+                                    Button::new("tun-toggle")
+                                        .label("⏳ Starting TUN...".to_string())
+                                        .tooltip("TUN is initializing, please wait")
+                                        .loading(true)
+                                        .ghost()
                                 } else if tun_supported() {
                                     Button::new("tun-toggle")
                                         .label("⭕ Enable TUN".to_string())
@@ -1958,7 +1964,7 @@ impl AppState {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(TEXT_SECONDARY))
+                            .text_color(rgb(status_text_color(&self.tun_status)))
                             .mt_2()
                             .child(format!("{}", self.tun_status)),
                     )
