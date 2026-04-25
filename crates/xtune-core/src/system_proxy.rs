@@ -66,26 +66,56 @@ pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Resu
         bail!("system proxy host cannot be empty");
     }
 
-    sysproxy::Sysproxy {
+    let proxy = sysproxy::Sysproxy {
         enable: true,
         host: host.to_string(),
         port,
         bypass: bypass.to_string(),
-    }
-    .set_system_proxy()
-    .map_err(|e| {
-        let msg = format!("{}", e);
-        if msg.contains("denied") || msg.contains("permission") || msg.contains("access") {
-            anyhow::anyhow!(
-                "failed to set system proxy ({}:{}) — {}\nTry running as Administrator.",
+    };
+
+    match proxy.set_system_proxy() {
+        Ok(()) => return Ok(()),
+        Err(e) => {
+            let msg = format!("{}", e);
+            // On Windows the registry may hold a per-protocol value like
+            // "http=host:port;https=host:port" that the sysproxy crate cannot
+            // re-parse before writing.  Clear first and retry once.
+            if msg.contains("parse") || msg.contains("string") {
+                tracing::warn!(
+                    "set_system_proxy: parse error on first attempt ({}), clearing then retrying",
+                    msg
+                );
+                // Best-effort clear; ignore any error.
+                let _ = sysproxy::Sysproxy {
+                    enable: false,
+                    host: String::new(),
+                    port: 0,
+                    bypass: String::new(),
+                }
+                .set_system_proxy();
+
+                proxy.set_system_proxy().map_err(|e2| {
+                    anyhow::anyhow!("failed to set system proxy ({}:{}) — {}", host, port, e2)
+                })?;
+                return Ok(());
+            }
+
+            if msg.contains("denied") || msg.contains("permission") || msg.contains("access") {
+                return Err(anyhow::anyhow!(
+                    "failed to set system proxy ({}:{}) — {}\nTry running as Administrator.",
+                    host,
+                    port,
+                    e
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "failed to set system proxy ({}:{}) — {}",
                 host,
                 port,
                 e
-            )
-        } else {
-            anyhow::anyhow!("failed to set system proxy ({}:{}) — {}", host, port, e)
+            ));
         }
-    })
+    }
 }
 
 pub fn clear_system_proxy() -> Result<()> {

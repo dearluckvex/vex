@@ -109,8 +109,10 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
     // Phase 1: Warmup — establish underlying connections (QUIC session, etc.)
+    // Capped at 2 s so batch tests don't stall waiting for slow warmup.
     // Failure is non-fatal: if warmup can't connect, we still attempt the timed measurement.
-    match tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80)).await {
+    let warmup_timeout = std::cmp::min(timeout, std::time::Duration::from_secs(2));
+    match tokio::time::timeout(warmup_timeout, outbound.connect("www.gstatic.com", 80)).await {
         Ok(Ok(mut s)) => {
             let _ = s
                 .write_all(
@@ -118,31 +120,38 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
                 )
                 .await;
             let mut buf = [0u8; 128];
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read(&mut buf)).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), s.read(&mut buf)).await;
         }
         Ok(Err(e)) => {
             tracing::debug!("http_latency_test warmup failed (non-fatal): {:#}", e);
         }
         Err(_) => {
             tracing::debug!(
-                "http_latency_test warmup timed out after {}s (non-fatal)",
-                timeout_secs
+                "http_latency_test warmup timed out (non-fatal)",
             );
         }
     }
 
     // Phase 2: Measure — connect again using cached/warm connections.
-    // Try a second target (cp.cloudflare.com) as fallback if gstatic fails,
-    // so region-specific blocks don't produce false latency failures.
+    // Try fallback targets if gstatic fails, so region-specific blocks don't
+    // produce false latency failures.
     let start = std::time::Instant::now();
     let stream = match tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80)).await
     {
         Ok(Ok(s)) => Ok(s),
         _ => {
             tracing::debug!("http_latency_test: gstatic unreachable, trying cp.cloudflare.com");
-            tokio::time::timeout(timeout, outbound.connect("cp.cloudflare.com", 80))
-                .await
-                .map_err(|_| anyhow::anyhow!("connection timed out"))?
+            match tokio::time::timeout(timeout, outbound.connect("cp.cloudflare.com", 80)).await {
+                Ok(Ok(s)) => Ok(s),
+                _ => {
+                    tracing::debug!(
+                        "http_latency_test: cloudflare unreachable, trying dns.google"
+                    );
+                    tokio::time::timeout(timeout, outbound.connect("dns.google", 80))
+                        .await
+                        .map_err(|_| anyhow::anyhow!("connection timed out"))?
+                }
+            }
         }
     };
     let mut stream = stream?;
@@ -153,7 +162,7 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
         )
         .await?;
     let mut buf = [0u8; 128];
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf)).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buf)).await;
 
     Ok(start.elapsed().as_millis() as u32)
 }

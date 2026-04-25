@@ -116,17 +116,22 @@ impl ProxyService {
     }
 
     /// Stop the proxy service.
+    ///
+    /// Each server task is aborted and awaited with a 500 ms deadline so that
+    /// a stuck task (e.g. a lingering QUIC session draining) never blocks the
+    /// UI for more than ~1 s total.
     pub async fn stop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(true);
         }
+        let deadline = std::time::Duration::from_millis(500);
         if let Some(h) = self.socks5_handle.take() {
             h.abort();
-            let _ = h.await;
+            let _ = tokio::time::timeout(deadline, h).await;
         }
         if let Some(h) = self.http_handle.take() {
             h.abort();
-            let _ = h.await;
+            let _ = tokio::time::timeout(deadline, h).await;
         }
         self.set_state(ProxyState::Disconnected);
         tracing::info!("Proxy service stopped");

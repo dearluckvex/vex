@@ -4536,30 +4536,51 @@ async fn verify_local_http_proxy(
     // timeout itself.
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
+    // Quick liveness check: verify the local port is accepting connections
+    // before sending any external CONNECT requests.  This avoids wasting the
+    // full probe timeout when the proxy failed to bind.
+    let local_ok = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::TcpStream::connect((listen_addr, http_port)),
+    )
+    .await;
+    if !matches!(local_ok, Ok(Ok(_))) {
+        anyhow::bail!(
+            "local proxy not accepting connections on {}:{}",
+            listen_addr,
+            http_port
+        );
+    }
+
+    // Per-probe timeout: use a shorter first-attempt timeout so we can
+    // iterate to the retry faster when the node is temporarily slow.
+    let first_timeout = std::cmp::min(timeout, std::time::Duration::from_secs(5));
+
     // Three well-known CONNECT-friendly endpoints.  They are probed in
     // parallel; a single success is sufficient to declare the proxy healthy.
     let mut errors = Vec::new();
 
     for attempt in 1..=2u32 {
+        let probe_timeout = if attempt == 1 { first_timeout } else { timeout };
         let (r1, r2, r3) = tokio::join!(
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
-                timeout,
+                probe_timeout,
                 "www.gstatic.com",
                 "/generate_204"
             ),
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
-                timeout,
+                probe_timeout,
                 "cp.cloudflare.com",
                 "/generate_204"
             ),
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
-                timeout,
+                probe_timeout,
                 "dns.google",
                 "/generate_204"
             ),
@@ -4581,7 +4602,7 @@ async fn verify_local_http_proxy(
                 if attempt < 2 {
                     // Wait briefly before retrying — lets transient proxy
                     // warm-up issues resolve without a long global timeout.
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 }
             }
         }
@@ -4644,7 +4665,14 @@ async fn verify_local_http_proxy_once(
     if !status_line.starts_with("HTTP/1.") {
         anyhow::bail!("unexpected proxy response: {}", status_line);
     }
-    if !status_line.contains(" 200 ") {
+    // Accept "200" anywhere after the HTTP version — some proxies omit
+    // the trailing space (e.g. "HTTP/1.1 200" without a reason phrase).
+    let code = status_line
+        .splitn(3, ' ')
+        .nth(1)
+        .unwrap_or_default()
+        .trim();
+    if code != "200" {
         anyhow::bail!("tunnel establishment failed: {}", status_line);
     }
 
