@@ -2437,6 +2437,193 @@ impl AppState {
 // === Config View ===
 
 impl AppState {
+    fn delete_subscription(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.subscriptions.len() {
+            return;
+        }
+        let url = self.subscriptions[index].url.clone();
+        self.subscriptions.remove(index);
+        // Remove nodes tagged with this subscription URL
+        self.nodes
+            .retain(|n| n.extra.get("sub_url").map_or(true, |u| u != &url));
+        // Restore indices after removal
+        let len = self.nodes.len();
+        if let Some(i) = self.selected_node {
+            if i >= len {
+                self.selected_node = if len > 0 { Some(len - 1) } else { None };
+            }
+        }
+        if let Some(i) = self.active_proxy_node {
+            if i >= len {
+                self.active_proxy_node = None;
+            }
+        }
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    /// Cycle through common refresh intervals: 24h → 12h → 6h → off (0) → 24h
+    fn cycle_refresh_interval(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(sub) = self.subscriptions.get_mut(index) {
+            sub.refresh_interval_hours = match sub.refresh_interval_hours {
+                0 => 24,
+                6 => 0,
+                12 => 6,
+                24 => 12,
+                _ => 24,
+            };
+        }
+        self.persist_gui_state();
+        cx.notify();
+    }
+
+    fn format_last_updated(ts: Option<u64>) -> String {
+        let Some(ts) = ts else {
+            return "Never".to_string();
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let age = now.saturating_sub(ts);
+        if age < 60 {
+            "Just now".to_string()
+        } else if age < 3600 {
+            format!("{}m ago", age / 60)
+        } else if age < 86400 {
+            format!("{}h ago", age / 3600)
+        } else {
+            format!("{}d ago", age / 86400)
+        }
+    }
+
+    fn render_subscription_list(&mut self, cx: &mut Context<Self>) -> Div {
+        let sub_count = self.subscriptions.len();
+        let card = self
+            .card()
+            .child(self.card_title(&format!(
+                "Saved Subscriptions{}",
+                if sub_count > 0 {
+                    format!(" — {}", sub_count)
+                } else {
+                    String::new()
+                }
+            )));
+
+        if sub_count == 0 {
+            return card.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(TEXT_MUTED))
+                    .child("No subscriptions saved. Import one above."),
+            );
+        }
+
+        let mut rows = div().flex().flex_col().gap_2();
+        for (i, sub) in self.subscriptions.iter().enumerate() {
+            let last_updated = Self::format_last_updated(sub.last_updated);
+            let interval_label = match sub.refresh_interval_hours {
+                0 => "Off".to_string(),
+                h => format!("{}h", h),
+            };
+            let url_display = if sub.url.len() > 48 {
+                format!("{}…", &sub.url[..48])
+            } else {
+                sub.url.clone()
+            };
+            let name = sub.name.clone();
+            let node_count = self
+                .nodes
+                .iter()
+                .filter(|n| n.extra.get("sub_url").map_or(false, |u| u == &sub.url))
+                .count();
+
+            let row = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_3()
+                .rounded_lg()
+                .bg(rgb(BG_CARD))
+                .border_1()
+                .border_color(rgb(BORDER_COLOR))
+                // Name + URL row
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(rgb(TEXT_MUTED))
+                                .child(url_display),
+                        ),
+                )
+                // Meta row: node count + last updated + interval cycle button
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .child(format!("{} nodes", node_count)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(TEXT_MUTED))
+                                .child(format!("Updated: {}", last_updated)),
+                        )
+                        .child(
+                            // Interval cycle button
+                            Button::new(("interval-btn", i))
+                                .label(format!("⏱ {}", interval_label))
+                                .tooltip("Click to cycle refresh interval: 24h → 12h → 6h → Off")
+                                .ghost()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cycle_refresh_interval(i, cx);
+                                })),
+                        )
+                        .child(div().flex_1()) // spacer
+                        // Refresh now button
+                        .child(
+                            Button::new(("refresh-sub-btn", i))
+                                .label("↻ Refresh".to_string())
+                                .tooltip("Fetch new nodes from this subscription now")
+                                .ghost()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.refresh_subscription(i, cx);
+                                })),
+                        )
+                        // Delete button
+                        .child(
+                            Button::new(("delete-sub-btn", i))
+                                .label("🗑".to_string())
+                                .tooltip("Remove this subscription and its nodes")
+                                .ghost()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.delete_subscription(i, cx);
+                                })),
+                        ),
+                );
+            rows = rows.child(row);
+        }
+        card.child(rows)
+    }
+
     fn render_config(&mut self, cx: &mut Context<Self>) -> Div {
         let import_status = self.import_status.clone();
         let node_count = self.nodes.len();
@@ -2575,6 +2762,8 @@ impl AppState {
                             ),
                     ),
             )
+            // Saved subscriptions card
+            .child(self.render_subscription_list(cx))
             // Node summary card
             .child(
                 self.card()
