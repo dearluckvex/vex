@@ -1361,8 +1361,14 @@ impl AppState {
             return; // write already queued
         }
         self.pending_persist = true;
+        let handle = self.tokio_handle.clone();
         cx.spawn(async move |weak, cx| {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            handle
+                .spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                })
+                .await
+                .ok();
             weak.update(cx, |this, _cx| {
                 this.pending_persist = false;
                 this.persist_gui_state();
@@ -1394,7 +1400,15 @@ impl AppState {
             let mut last_err = String::new();
             for attempt in 0..3u32 {
                 if attempt > 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                    handle
+                        .spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(
+                                2u64.pow(attempt),
+                            ))
+                            .await;
+                        })
+                        .await
+                        .ok();
                 }
                 let sub_clone = sub.clone();
                 match handle.spawn(async move { fetch_subscription(&sub_clone).await }).await {
