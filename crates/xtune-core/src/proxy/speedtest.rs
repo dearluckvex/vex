@@ -131,11 +131,21 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
         }
     }
 
-    // Phase 2: Measure — connect again using cached/warm connections
+    // Phase 2: Measure — connect again using cached/warm connections.
+    // Try a second target (cp.cloudflare.com) as fallback if gstatic fails,
+    // so region-specific blocks don't produce false latency failures.
     let start = std::time::Instant::now();
-    let mut stream = tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80))
-        .await
-        .map_err(|_| anyhow::anyhow!("connection timed out"))??;
+    let stream = match tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80)).await
+    {
+        Ok(Ok(s)) => Ok(s),
+        _ => {
+            tracing::debug!("http_latency_test: gstatic unreachable, trying cp.cloudflare.com");
+            tokio::time::timeout(timeout, outbound.connect("cp.cloudflare.com", 80))
+                .await
+                .map_err(|_| anyhow::anyhow!("connection timed out"))?
+        }
+    };
+    let mut stream = stream?;
 
     stream
         .write_all(

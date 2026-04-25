@@ -113,6 +113,8 @@ pub struct AppState {
 
     // Nodes currently being latency-tested
     latency_testing: std::collections::HashSet<usize>,
+    // Nodes whose most recent latency test completed with a failure
+    latency_failed: std::collections::HashSet<usize>,
     // Semaphore to cap concurrent latency tests and avoid network saturation
     latency_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     // Debounce flag: a persist task is already scheduled (avoid 50+ writes during batch test)
@@ -275,6 +277,7 @@ impl AppState {
             node_filter: String::new(),
             node_filter_input,
             latency_testing: std::collections::HashSet::new(),
+            latency_failed: std::collections::HashSet::new(),
             latency_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
             pending_persist: false,
             subscriptions: persisted.subscriptions.clone(),
@@ -709,6 +712,8 @@ impl AppState {
         self.nodes.clear();
         self.selected_node = None;
         self.active_proxy_node = None;
+        self.latency_testing.clear();
+        self.latency_failed.clear();
         self.import_status = "Nodes cleared".to_string();
         self.proxy_validation_status = "Not validated".to_string();
         self.persist_gui_state();
@@ -723,8 +728,9 @@ impl AppState {
             None => return,
         };
 
-        // Mark as testing and clear previous latency
+        // Mark as testing, clear previous result and failure state
         self.latency_testing.insert(index);
+        self.latency_failed.remove(&index);
         if let Some(n) = self.nodes.get_mut(index) {
             n.latency_ms = None;
         }
@@ -742,14 +748,15 @@ impl AppState {
 
                     let outbound =
                         xtune_core::create_outbound(&node).map_err(|e| format!("{:#}", e))?;
-                    // Run TCP ping and full HTTP probe concurrently. HTTP gives
-                    // protocol-realistic latency; TCP is the fallback if the proxy
-                    // probe target is temporarily unreachable.
+                    // Run TCP ping and full HTTP probe concurrently.
+                    // HTTP gives protocol-realistic latency; TCP is the fallback
+                    // if the proxy probe target is temporarily unreachable.
+                    // Timeout reduced to 5s (was 10s) to keep batch tests responsive.
                     let server = node.server.clone();
                     let port = node.port;
                     let (tcp_result, http_result) = tokio::join!(
                         xtune_core::tcp_latency_test(&server, port, 5),
-                        xtune_core::http_latency_test(&outbound, 10),
+                        xtune_core::http_latency_test(&outbound, 5),
                     );
                     match http_result {
                         Ok(ms) => Ok(ms),
@@ -766,10 +773,18 @@ impl AppState {
 
             weak.update(cx, |this: &mut AppState, cx| {
                 this.latency_testing.remove(&index);
-                if let Some(n) = this.nodes.get_mut(index) {
-                    match result {
-                        Ok(Ok(ms)) => n.latency_ms = Some(ms),
-                        Ok(Err(_)) | Err(_) => n.latency_ms = None,
+                match result {
+                    Ok(Ok(ms)) => {
+                        this.latency_failed.remove(&index);
+                        if let Some(n) = this.nodes.get_mut(index) {
+                            n.latency_ms = Some(ms);
+                        }
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        this.latency_failed.insert(index);
+                        if let Some(n) = this.nodes.get_mut(index) {
+                            n.latency_ms = None;
+                        }
                     }
                 }
                 this.schedule_persist(cx); // debounced: coalesces N node completions → 1 write
@@ -2291,16 +2306,11 @@ impl AppState {
             "Activate"
         };
         let is_testing = self.latency_testing.contains(&index);
+        let is_failed = self.latency_failed.contains(&index);
         let latency = node
             .latency_ms
-            .map(|ms| {
-                if ms >= 9999 {
-                    "timeout".to_string()
-                } else {
-                    format!("{}ms", ms)
-                }
-            })
-            .unwrap_or_else(|| "---".to_string());
+            .map(|ms| format!("{}ms", ms))
+            .unwrap_or_else(|| if is_failed { "✗".to_string() } else { "---".to_string() });
         let latency_color = node
             .latency_ms
             .map(|ms| {
@@ -2312,7 +2322,13 @@ impl AppState {
                     rgb(DANGER_COLOR)
                 }
             })
-            .unwrap_or(rgb(TEXT_MUTED));
+            .unwrap_or_else(|| {
+                if is_failed {
+                    rgb(DANGER_COLOR)
+                } else {
+                    rgb(TEXT_MUTED)
+                }
+            });
 
         let bg = if is_active {
             rgb(BG_ACCENT_SUBTLE)
@@ -3734,14 +3750,14 @@ impl AppState {
 
         let latency_str = node
             .latency_ms
-            .map(|ms| {
-                if ms >= 9999 {
-                    "timeout".to_string()
+            .map(|ms| format!("{} ms", ms))
+            .unwrap_or_else(|| {
+                if self.latency_failed.contains(&index) {
+                    "Failed".to_string()
                 } else {
-                    format!("{} ms", ms)
+                    "Not tested".to_string()
                 }
-            })
-            .unwrap_or_else(|| "Not tested".to_string());
+            });
 
         self.card()
             .child(
