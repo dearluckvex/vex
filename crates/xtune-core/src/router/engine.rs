@@ -1,6 +1,8 @@
-use std::collections::HashMap;
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
+
+use lru::LruCache;
 
 use super::geoip::GeoIpDb;
 use crate::config::model::RoutingRule;
@@ -124,8 +126,8 @@ impl Default for RuleSet {
 pub struct Router {
     rules: RuleSet,
     geoip: Option<Arc<GeoIpDb>>,
-    /// LRU-ish cache: host -> action (cleared when full)
-    cache: RwLock<HashMap<String, RouteAction>>,
+    /// LRU route cache: evicts least-recently-used entries when full (avoids thundering-herd on full flush).
+    cache: RwLock<LruCache<String, RouteAction>>,
 }
 
 impl Router {
@@ -133,7 +135,9 @@ impl Router {
         Self {
             rules,
             geoip: None,
-            cache: RwLock::new(HashMap::new()),
+            cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(ROUTE_CACHE_CAP).unwrap(),
+            )),
         }
     }
 
@@ -145,21 +149,18 @@ impl Router {
     /// Evaluate routing rules for a given destination.
     /// `host` can be a domain name or IP address string.
     pub fn route(&self, host: &str, port: u16) -> RouteAction {
-        // Fast path: check cache (port is unused in all match rules)
+        // Fast path: check cache using peek() — avoids requiring &mut self under read lock
         if let Ok(cache) = self.cache.read() {
-            if let Some(action) = cache.get(host) {
+            if let Some(action) = cache.peek(host) {
                 return action.clone();
             }
         }
 
         let action = self.route_uncached(host, port);
 
-        // Store in cache
+        // Store in cache — LruCache::put auto-evicts the LRU entry when full
         if let Ok(mut cache) = self.cache.write() {
-            if cache.len() >= ROUTE_CACHE_CAP {
-                cache.clear();
-            }
-            cache.insert(host.to_string(), action.clone());
+            cache.put(host.to_string(), action.clone());
         }
 
         action

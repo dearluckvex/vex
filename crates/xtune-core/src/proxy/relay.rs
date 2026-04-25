@@ -62,20 +62,23 @@ struct Relay<'a, A: ?Sized, B: ?Sized> {
     b_done: bool,
 }
 
-/// Transfer data from reader to writer using a CopyBuf, returning bytes transferred.
+/// Transfer data from reader to writer using a CopyBuf.
+///
+/// `total` is a cross-poll accumulator: each successful `poll_write` immediately
+/// increments `*total` so that bytes are counted even when the function returns
+/// `Poll::Pending` mid-way (fixing the lost-bytes stats bug).
 fn transfer_one<R, W>(
     cx: &mut Context<'_>,
     reader: &mut R,
     writer: &mut W,
     buf: &mut CopyBuf,
     done: &mut bool,
-) -> Poll<io::Result<u64>>
+    total: &mut u64,
+) -> Poll<io::Result<()>>
 where
     R: AsyncRead + Unpin + ?Sized,
     W: AsyncWrite + Unpin + ?Sized,
 {
-    let mut transferred: u64 = 0;
-
     loop {
         // If we have data in the buffer, write it out
         if buf.pos < buf.cap {
@@ -84,7 +87,7 @@ where
                 return Poll::Ready(Err(io::Error::new(io::ErrorKind::WriteZero, "write zero")));
             }
             buf.pos += n;
-            transferred += n as u64;
+            *total += n as u64; // accumulate immediately — persists across polls
             if buf.pos == buf.cap {
                 buf.pos = 0;
                 buf.cap = 0;
@@ -95,7 +98,7 @@ where
         // If the reader is done, flush and return
         if *done {
             ready!(Pin::new(&mut *writer).poll_flush(cx))?;
-            return Poll::Ready(Ok(transferred));
+            return Poll::Ready(Ok(()));
         }
 
         // Read new data
@@ -107,7 +110,7 @@ where
                     *done = true;
                     // Shutdown the write half
                     ready!(Pin::new(&mut *writer).poll_shutdown(cx))?;
-                    return Poll::Ready(Ok(transferred));
+                    return Poll::Ready(Ok(()));
                 }
                 buf.cap = n;
             }
@@ -126,29 +129,29 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
 
-        // Drive A → B
+        // Drive A → B (bytes accumulate directly into this.a_to_b on every write)
         let a_to_b = if !this.a_done || this.a_buf.pos < this.a_buf.cap {
-            transfer_one(cx, this.a, this.b, &mut this.a_buf, &mut this.a_done)
+            transfer_one(cx, this.a, this.b, &mut this.a_buf, &mut this.a_done, &mut this.a_to_b)
         } else {
-            Poll::Ready(Ok(0))
+            Poll::Ready(Ok(()))
         };
 
-        // Drive B → A
+        // Drive B → A (bytes accumulate directly into this.b_to_a on every write)
         let b_to_a = if !this.b_done || this.b_buf.pos < this.b_buf.cap {
-            transfer_one(cx, this.b, this.a, &mut this.b_buf, &mut this.b_done)
+            transfer_one(cx, this.b, this.a, &mut this.b_buf, &mut this.b_done, &mut this.b_to_a)
         } else {
-            Poll::Ready(Ok(0))
+            Poll::Ready(Ok(()))
         };
 
-        // Accumulate transferred bytes from ready results; propagate errors immediately.
+        // Propagate errors immediately.
         match a_to_b {
-            Poll::Ready(Ok(n)) => this.a_to_b += n,
+            Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => {}
         }
 
         match b_to_a {
-            Poll::Ready(Ok(n)) => this.b_to_a += n,
+            Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => {}
         }

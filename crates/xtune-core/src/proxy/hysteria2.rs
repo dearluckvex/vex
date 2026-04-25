@@ -104,7 +104,7 @@ impl Hysteria2Outbound {
         // Transport config: BBR congestion control for Hysteria2
         let mut transport = quinn::TransportConfig::default();
         transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
-        transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+        transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
         transport.max_idle_timeout(Some(
             quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
         ));

@@ -721,7 +721,7 @@ impl AppState {
                 if let Some(n) = this.nodes.get_mut(index) {
                     match result {
                         Ok(Ok(ms)) => n.latency_ms = Some(ms),
-                        Ok(Err(_)) | Err(_) => n.latency_ms = Some(9999),
+                        Ok(Err(_)) | Err(_) => n.latency_ms = None,
                     }
                 }
                 this.persist_gui_state();
