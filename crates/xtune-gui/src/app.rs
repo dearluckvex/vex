@@ -95,6 +95,8 @@ pub struct AppState {
 
     // Proxy shutdown
     proxy_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Cancels in-flight proxy reachability validation immediately on disconnect.
+    proxy_validation_cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
 
     // TUN mode
     tun_enabled: bool,
@@ -267,6 +269,7 @@ impl AppState {
             proxy_stats: None,
             tokio_handle,
             proxy_stop_tx: None,
+            proxy_validation_cancel_tx: None,
             tun_enabled: false,
             tun_status: "Disabled".to_string(),
             tun_stop_tx: None,
@@ -364,9 +367,11 @@ impl AppState {
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (validation_cancel_tx, validation_cancel_rx) = tokio::sync::oneshot::channel::<()>();
         self.proxy_session_id += 1;
         let session_id = self.proxy_session_id;
         self.proxy_stop_tx = Some(stop_tx);
+        self.proxy_validation_cancel_tx = Some(validation_cancel_tx);
         self.proxy_stats = Some(stats);
         self.proxy_running = true;
         self.proxy_status = "Connecting...".to_string();
@@ -429,6 +434,7 @@ impl AppState {
                         }
                         this.proxy_running = false;
                         this.proxy_stop_tx = None;
+                        this.proxy_validation_cancel_tx = None;
                         this.proxy_stats = None;
                         this.active_proxy_node = None;
                         this.proxy_status = format!("✗ Start failed: {:#}", err);
@@ -444,12 +450,16 @@ impl AppState {
             let mut validation_task = if ready_ok {
                 let addr_for_check = listen_addr.clone();
                 Some(handle.spawn(async move {
-                    verify_local_http_proxy(
-                        &addr_for_check,
-                        http_port,
-                        std::time::Duration::from_secs(6),
-                    )
-                    .await
+                    tokio::select! {
+                        result = verify_local_http_proxy(
+                            &addr_for_check,
+                            http_port,
+                            std::time::Duration::from_secs(8),
+                        ) => result,
+                        _ = validation_cancel_rx => {
+                            Err(anyhow::anyhow!("cancelled"))
+                        }
+                    }
                 }))
             } else {
                 None
@@ -513,6 +523,7 @@ impl AppState {
                 // set them here too to handle the self-termination path.
                 this.proxy_running = false;
                 this.proxy_stop_tx = None;
+                this.proxy_validation_cancel_tx = None;
                 this.proxy_stats = None;
                 this.active_proxy_node = None;
                 match result {
@@ -547,6 +558,10 @@ impl AppState {
             }
         }
         if let Some(tx) = self.proxy_stop_tx.take() {
+            let _ = tx.send(());
+        }
+        // Cancel validation immediately so it doesn't continue probing after disconnect.
+        if let Some(tx) = self.proxy_validation_cancel_tx.take() {
             let _ = tx.send(());
         }
         // Immediately reflect disconnected state in the UI so the user sees
@@ -720,12 +735,11 @@ impl AppState {
             None => return,
         };
 
-        // Mark as testing, clear previous result and failure state
+        // Mark as testing; keep the previous latency value visible while the test
+        // runs (cleared only if the new test fails).  Clear the failed flag so the
+        // spinner renders instead of "✗" while in-flight.
         self.latency_testing.insert(index);
         self.latency_failed.remove(&index);
-        if let Some(n) = self.nodes.get_mut(index) {
-            n.latency_ms = None;
-        }
         cx.notify();
 
         let handle = self.tokio_handle.clone();
@@ -3832,10 +3846,10 @@ async fn verify_local_http_proxy(
     timeout: std::time::Duration,
 ) -> anyhow::Result<String> {
     // Brief startup delay: let the proxy finish route table setup and any
-    // per-protocol handshaking before we start probing.  Without this, a fast
-    // attempt immediately after `service.start()` often times out on the first
-    // try even when the proxy is perfectly healthy.
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // per-protocol handshaking before we start probing.  800ms is enough for
+    // the local listener to be ready; further latency is absorbed by the probe
+    // timeout itself.
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
     // Three well-known CONNECT-friendly endpoints.  They are probed in
     // parallel; a single success is sufficient to declare the proxy healthy.
@@ -3882,7 +3896,7 @@ async fn verify_local_http_proxy(
                 if attempt < 2 {
                     // Wait briefly before retrying — lets transient proxy
                     // warm-up issues resolve without a long global timeout.
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 }
             }
         }
