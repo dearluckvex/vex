@@ -467,7 +467,9 @@ impl AppState {
                                 }
                                 this.proxy_validation_status = match proxy_check {
                                     Ok(summary) => format!("✓ {}", summary),
-                                    Err(err) => format!("✗ {:#}", err),
+                                    // Validation inconclusive ≠ proxy broken; use ⚠ not ✗
+                                    // (proxy is connected, specific probe hosts may be blocked)
+                                    Err(err) => format!("⚠ Inconclusive — {:#}", err),
                                 };
                                 cx.notify();
                             })
@@ -3800,12 +3802,18 @@ async fn verify_local_http_proxy(
     http_port: u16,
     timeout: std::time::Duration,
 ) -> anyhow::Result<String> {
-    // Run both targets in parallel per attempt; take the first success.
-    // This halves the worst-case wait compared to sequential probing.
+    // Brief startup delay: let the proxy finish route table setup and any
+    // per-protocol handshaking before we start probing.  Without this, a fast
+    // attempt immediately after `service.start()` often times out on the first
+    // try even when the proxy is perfectly healthy.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    // Three well-known CONNECT-friendly endpoints.  They are probed in
+    // parallel; a single success is sufficient to declare the proxy healthy.
     let mut errors = Vec::new();
 
     for attempt in 1..=2u32 {
-        let (r1, r2) = tokio::join!(
+        let (r1, r2, r3) = tokio::join!(
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
@@ -3820,20 +3828,33 @@ async fn verify_local_http_proxy(
                 "cp.cloudflare.com",
                 "/generate_204"
             ),
+            verify_local_http_proxy_once(
+                listen_addr,
+                http_port,
+                timeout,
+                "dns.google",
+                "/generate_204"
+            ),
         );
-        match (r1, r2) {
-            (Ok(summary), _) | (_, Ok(summary)) => {
+        match (r1, r2, r3) {
+            // Any single success counts: proxy is reachable.
+            (Ok(s), _, _) | (_, Ok(s), _) | (_, _, Ok(s)) => {
                 return if attempt == 1 {
-                    Ok(summary)
+                    Ok(s)
                 } else {
-                    Ok(format!("{} (after retry)", summary))
+                    Ok(format!("{} (after retry)", s))
                 };
             }
-            (Err(e1), Err(e2)) => {
+            (Err(e1), Err(e2), Err(e3)) => {
                 errors.push(format!(
-                    "attempt {}: gstatic: {}; cloudflare: {}",
-                    attempt, e1, e2
+                    "attempt {}: gstatic: {}; cloudflare: {}; dns.google: {}",
+                    attempt, e1, e2, e3
                 ));
+                if attempt < 2 {
+                    // Wait briefly before retrying — lets transient proxy
+                    // warm-up issues resolve without a long global timeout.
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
             }
         }
     }
