@@ -4616,9 +4616,9 @@ async fn verify_local_http_proxy(
             // Any single success counts: proxy is reachable.
             (Ok(s), _, _) | (_, Ok(s), _) | (_, _, Ok(s)) => {
                 return if attempt == 1 {
-                    Ok(s)
+                    Ok(format!("Connected — {}", s))
                 } else {
-                    Ok(format!("{} (after retry)", s))
+                    Ok(format!("Connected — {} (after retry)", s))
                 };
             }
             (Err(e1), Err(e2), Err(e3)) => {
@@ -4714,6 +4714,8 @@ async fn verify_local_http_proxy_once(
         tokio_rustls::rustls::pki_types::ServerName::try_from(target_host.to_string())
             .map_err(|e| anyhow::anyhow!("invalid server name: {}", e))?;
 
+    // Phase 2 failures all return Err so the caller treats them as inconclusive
+    // rather than falsely marking the probe as a ✓ success.
     let tls_stream = match tokio::time::timeout(
         timeout,
         connector.connect(server_name.to_owned(), stream),
@@ -4722,16 +4724,17 @@ async fn verify_local_http_proxy_once(
     {
         Ok(Ok(tls_stream)) => tls_stream,
         Ok(Err(err)) => {
-            return Ok(format!(
-                "Connected — tunnel established via {}, TLS verification inconclusive ({})",
-                target_host, err
-            ));
+            anyhow::bail!(
+                "TLS handshake failed via {}: {}",
+                target_host,
+                err
+            );
         }
         Err(_) => {
-            return Ok(format!(
-                "Connected — tunnel established via {}, remote verification still warming up",
+            anyhow::bail!(
+                "TLS handshake timed out via {} — node may be unreachable",
                 target_host
-            ));
+            );
         }
     };
 
@@ -4746,24 +4749,25 @@ async fn verify_local_http_proxy_once(
     let n = match tokio::time::timeout(timeout, reader.read(&mut resp_buf)).await {
         Ok(Ok(n)) => n,
         Ok(Err(err)) => {
-            return Ok(format!(
-                "Connected — tunnel established via {}, response verification inconclusive ({})",
-                target_host, err
-            ));
+            anyhow::bail!(
+                "response read failed via {}: {}",
+                target_host,
+                err
+            );
         }
         Err(_) => {
-            return Ok(format!(
-                "Connected — tunnel established via {}, remote verification still warming up",
+            anyhow::bail!(
+                "response timed out via {} — node may be slow or unreachable",
                 target_host
-            ));
+            );
         }
     };
 
     if n == 0 {
-        return Ok(format!(
-            "Connected — tunnel established via {}, server closed before verification response",
+        anyhow::bail!(
+            "server closed connection without a response via {}",
             target_host
-        ));
+        );
     }
 
     let resp = String::from_utf8_lossy(&resp_buf[..n]);
@@ -4771,14 +4775,15 @@ async fn verify_local_http_proxy_once(
 
     if resp_status.contains("204") || resp_status.contains("200") {
         Ok(format!(
-            "Connected — internet access verified via {}",
+            "internet access verified via {}",
             target_host
         ))
     } else {
-        Ok(format!(
-            "Connected — tunnel established via {}, server returned: {}",
-            target_host, resp_status
-        ))
+        anyhow::bail!(
+            "unexpected response from {}: {}",
+            target_host,
+            resp_status
+        )
     }
 }
 
