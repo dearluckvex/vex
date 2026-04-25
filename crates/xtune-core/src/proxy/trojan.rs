@@ -9,32 +9,8 @@ use tokio::io::AsyncWriteExt;
 use crate::config::model::TlsConfig;
 
 use super::connector::{BoxProxyStream, Outbound};
-use super::pool::{ConnFactory, ConnPool};
-use super::transport::{build_tls_connector, connect_with_connector};
-
-/// Factory that creates TCP+TLS connections to the Trojan proxy server.
-struct TrojanConnFactory {
-    server: String,
-    port: u16,
-    sni: String,
-    connector: craft_tls::TlsConnector,
-}
-
-impl ConnFactory for TrojanConnFactory {
-    fn create(&self) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
-        Box::pin(async {
-            connect_with_connector(
-                &self.server,
-                self.port,
-                &self.connector,
-                &self.sni,
-                true,
-                std::time::Duration::from_secs(15),
-            )
-            .await
-        })
-    }
-}
+use super::pool::ConnPool;
+use super::transport::TlsConnFactory;
 
 /// Trojan outbound connector.
 /// Trojan always uses TLS - the protocol is designed to look like normal HTTPS traffic.
@@ -49,18 +25,8 @@ impl TrojanOutbound {
     pub fn new(server: &str, port: u16, password: &str, tls_config: Option<&TlsConfig>) -> Self {
         let hash = Sha224::digest(password.as_bytes());
         let password_hash = hex::encode(hash);
-        let sni = tls_config
-            .and_then(|c| c.sni.as_deref())
-            .unwrap_or(server)
-            .to_string();
-        let connector = build_tls_connector(tls_config);
-
-        let factory = Arc::new(TrojanConnFactory {
-            server: server.to_string(),
-            port,
-            sni,
-            connector,
-        });
+        // Trojan always uses TLS (use_tls = true)
+        let factory = Arc::new(TlsConnFactory::new(server, port, tls_config, true));
         let pool = ConnPool::new(factory);
 
         Self {

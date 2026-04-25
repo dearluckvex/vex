@@ -13,11 +13,11 @@ use rand::Rng;
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use crate::config::model::{TlsConfig, TransportConfig, TransportType};
+use crate::config::model::TransportConfig;
 
 use super::connector::{BoxProxyStream, Outbound, ProxyStream};
-use super::pool::{ConnFactory, ConnPool};
-use super::transport::{build_tls_connector, connect_with_connector};
+use super::pool::ConnPool;
+use super::transport::{TlsConnFactory, resolve_transport_tls};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -54,31 +54,6 @@ impl VMessSecurity {
     }
 }
 
-/// Factory that creates TCP+TLS connections to the VMess proxy server.
-struct VMessConnFactory {
-    server: String,
-    port: u16,
-    sni: String,
-    use_tls: bool,
-    connector: craft_tls::TlsConnector,
-}
-
-impl ConnFactory for VMessConnFactory {
-    fn create(&self) -> Pin<Box<dyn Future<Output = Result<BoxProxyStream>> + Send + '_>> {
-        Box::pin(async {
-            connect_with_connector(
-                &self.server,
-                self.port,
-                &self.connector,
-                &self.sni,
-                self.use_tls,
-                std::time::Duration::from_secs(15),
-            )
-            .await
-        })
-    }
-}
-
 /// VMess AEAD outbound connector.
 pub struct VMessOutbound {
     server: String,
@@ -98,45 +73,8 @@ impl VMessOutbound {
     ) -> Result<Self> {
         let parsed_uuid = uuid::Uuid::parse_str(uuid_str)?;
 
-        let (tls_config, use_tls) = match transport {
-            Some(t) => {
-                let needs_tls = matches!(
-                    t.transport_type,
-                    TransportType::Tls | TransportType::Reality
-                );
-                let tls = if t.transport_type == TransportType::Reality && t.tls.is_none() {
-                    if let Some(ref reality) = t.reality {
-                        Some(crate::config::model::TlsConfig {
-                            sni: reality.sni.clone(),
-                            skip_cert_verify: true,
-                            alpn: Some(vec!["h2".to_string(), "http/1.1".to_string()]),
-                            fingerprint: None,
-                        })
-                    } else {
-                        t.tls.clone()
-                    }
-                } else {
-                    t.tls.clone()
-                };
-                (tls, needs_tls)
-            }
-            None => (None, false),
-        };
-
-        let sni = tls_config
-            .as_ref()
-            .and_then(|c| c.sni.as_deref())
-            .unwrap_or(server)
-            .to_string();
-        let connector = build_tls_connector(tls_config.as_ref());
-
-        let factory = Arc::new(VMessConnFactory {
-            server: server.to_string(),
-            port,
-            sni,
-            use_tls,
-            connector,
-        });
+        let (tls_config, use_tls) = resolve_transport_tls(transport, server);
+        let factory = Arc::new(TlsConnFactory::new(server, port, tls_config.as_ref(), use_tls));
         let pool = ConnPool::new(factory);
 
         Ok(Self {

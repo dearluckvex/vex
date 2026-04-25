@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -12,7 +14,10 @@ use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
 
-use crate::config::model::TlsConfig;
+use crate::config::model::{TlsConfig, TransportConfig, TransportType};
+
+use super::connector::BoxProxyStream;
+use super::pool::ConnFactory;
 
 /// Default timeout for TCP connect + TLS handshake.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -250,5 +255,91 @@ impl ServerCertVerifier for InsecureVerifier {
             SignatureScheme::ED25519,
             SignatureScheme::ED448,
         ]
+    }
+}
+
+// --- Shared helpers for TCP+TLS outbounds ---
+
+/// Resolve TLS config and TLS-enable flag from a transport config.
+///
+/// Handles the Reality special case: when `transport_type == Reality` and
+/// no explicit `tls` block is present, synthesises a TlsConfig from the
+/// Reality settings (SNI + skip_cert_verify).
+pub fn resolve_transport_tls(
+    transport: Option<&TransportConfig>,
+    server: &str,
+) -> (Option<TlsConfig>, bool) {
+    let Some(t) = transport else {
+        return (None, false);
+    };
+    let use_tls = matches!(t.transport_type, TransportType::Tls | TransportType::Reality);
+    let tls = if t.transport_type == TransportType::Reality && t.tls.is_none() {
+        if let Some(ref r) = t.reality {
+            tracing::info!(
+                "Reality transport: using SNI '{}' with skip_cert_verify",
+                r.sni.as_deref().unwrap_or(server)
+            );
+            Some(TlsConfig {
+                sni: r.sni.clone(),
+                skip_cert_verify: true,
+                alpn: Some(vec!["h2".to_string(), "http/1.1".to_string()]),
+                fingerprint: None,
+            })
+        } else {
+            t.tls.clone()
+        }
+    } else {
+        t.tls.clone()
+    };
+    (tls, use_tls)
+}
+
+/// Shared connection factory for TLS-based outbounds (VLESS, VMess, Trojan).
+///
+/// Replaces the per-protocol `XxxConnFactory` boilerplate. Build once in
+/// `Outbound::new()` and store inside a `ConnPool`.
+pub struct TlsConnFactory {
+    server: String,
+    port: u16,
+    sni: String,
+    use_tls: bool,
+    connector: TlsConnector,
+}
+
+impl TlsConnFactory {
+    /// Create from an optional TLS config.  SNI falls back to `server` if not set.
+    pub fn new(
+        server: &str,
+        port: u16,
+        tls_config: Option<&TlsConfig>,
+        use_tls: bool,
+    ) -> Self {
+        let sni = tls_config
+            .and_then(|c| c.sni.as_deref())
+            .unwrap_or(server)
+            .to_string();
+        Self {
+            server: server.to_string(),
+            port,
+            sni,
+            use_tls,
+            connector: build_tls_connector(tls_config),
+        }
+    }
+}
+
+impl ConnFactory for TlsConnFactory {
+    fn create(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<BoxProxyStream>> + Send + '_>> {
+        Box::pin(async {
+            connect_with_connector(
+                &self.server,
+                self.port,
+                &self.connector,
+                &self.sni,
+                self.use_tls,
+                Duration::from_secs(15),
+            )
+            .await
+        })
     }
 }
