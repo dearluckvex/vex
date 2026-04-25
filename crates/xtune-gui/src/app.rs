@@ -112,6 +112,8 @@ pub struct AppState {
 
     // Nodes currently being latency-tested
     latency_testing: std::collections::HashSet<usize>,
+    // Semaphore to cap concurrent latency tests and avoid network saturation
+    latency_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 
     // Manual node URI input
     node_uri_input: Entity<InputState>,
@@ -267,6 +269,7 @@ impl AppState {
             node_filter: String::new(),
             node_filter_input,
             latency_testing: std::collections::HashSet::new(),
+            latency_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
             node_uri_input,
             editing_rule_index: None,
             log_buffer,
@@ -680,19 +683,29 @@ impl AppState {
         cx.notify();
 
         let handle = self.tokio_handle.clone();
+        let semaphore = self.latency_semaphore.clone();
 
         cx.spawn(async move |weak, cx| {
             let result = handle
                 .spawn(async move {
-                    // Prefer protocol-aware latency, but fall back to raw TCP
-                    // so transient probe endpoint issues don't become false timeouts.
-                    let tcp_fallback =
-                        xtune_core::tcp_latency_test(&node.server, node.port, 5).await;
+                    // Acquire semaphore to cap concurrent tests (avoids saturating
+                    // the local network when testing many nodes simultaneously).
+                    let _permit = semaphore.acquire_owned().await.ok();
+
                     let outbound =
                         xtune_core::create_outbound(&node).map_err(|e| format!("{:#}", e))?;
-                    match xtune_core::http_latency_test(&outbound, 10).await {
+                    // Run TCP ping and full HTTP probe concurrently. HTTP gives
+                    // protocol-realistic latency; TCP is the fallback if the proxy
+                    // probe target is temporarily unreachable.
+                    let server = node.server.clone();
+                    let port = node.port;
+                    let (tcp_result, http_result) = tokio::join!(
+                        xtune_core::tcp_latency_test(&server, port, 5),
+                        xtune_core::http_latency_test(&outbound, 10),
+                    );
+                    match http_result {
                         Ok(ms) => Ok(ms),
-                        Err(http_err) => match tcp_fallback {
+                        Err(http_err) => match tcp_result {
                             Ok(ms) => Ok(ms),
                             Err(tcp_err) => Err(format!(
                                 "proxy probe failed: {:#}; tcp fallback failed: {:#}",
@@ -3406,22 +3419,40 @@ async fn verify_local_http_proxy(
     http_port: u16,
     timeout: std::time::Duration,
 ) -> anyhow::Result<String> {
-    let targets = [
-        ("www.gstatic.com", "/generate_204"),
-        ("cp.cloudflare.com", "/generate_204"),
-    ];
+    // Run both targets in parallel per attempt; take the first success.
+    // This halves the worst-case wait compared to sequential probing.
     let mut errors = Vec::new();
 
-    for attempt in 1..=2 {
-        for (host, path) in targets {
-            match verify_local_http_proxy_once(listen_addr, http_port, timeout, host, path).await {
-                Ok(summary) => {
-                    if attempt == 1 {
-                        return Ok(summary);
-                    }
-                    return Ok(format!("{} (after retry)", summary));
-                }
-                Err(err) => errors.push(format!("{} attempt {}: {}", host, attempt, err)),
+    for attempt in 1..=2u32 {
+        let (r1, r2) = tokio::join!(
+            verify_local_http_proxy_once(
+                listen_addr,
+                http_port,
+                timeout,
+                "www.gstatic.com",
+                "/generate_204"
+            ),
+            verify_local_http_proxy_once(
+                listen_addr,
+                http_port,
+                timeout,
+                "cp.cloudflare.com",
+                "/generate_204"
+            ),
+        );
+        match (r1, r2) {
+            (Ok(summary), _) | (_, Ok(summary)) => {
+                return if attempt == 1 {
+                    Ok(summary)
+                } else {
+                    Ok(format!("{} (after retry)", summary))
+                };
+            }
+            (Err(e1), Err(e2)) => {
+                errors.push(format!(
+                    "attempt {}: gstatic: {}; cloudflare: {}",
+                    attempt, e1, e2
+                ));
             }
         }
     }

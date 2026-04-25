@@ -12,25 +12,29 @@ use super::tuic::TuicOutbound;
 use super::vless::VlessOutbound;
 use super::vmess::VMessOutbound;
 
-/// Number of retry attempts for transient connection failures.
+/// Number of retry attempts for transient connection failures (TCP-based protocols).
 const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
 
 /// Create an outbound connector from a Node configuration.
 ///
-/// All outbounds are automatically wrapped with retry logic to handle
-/// transient failures (brief network blips, server overload) that
-/// self-resolve on retry.
+/// TCP-based outbounds (VLess, VMess, Trojan, Shadowsocks) are wrapped with
+/// retry logic to handle transient network blips that self-resolve quickly.
+///
+/// QUIC-based outbounds (TUIC, Hysteria2) are NOT wrapped with outer retry:
+/// they maintain a persistent connection internally via `get_connection()`,
+/// which already handles reconnection. Adding outer retry would only multiply
+/// the already-long QUIC handshake timeout on truly unreachable servers.
 pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
-    let outbound = match &node.protocol {
+    match &node.protocol {
         ProxyProtocol::VLess { uuid, .. } => {
             let out = VlessOutbound::new(&node.server, node.port, uuid, node.transport.as_ref())?;
-            SharedOutbound(Arc::new(out))
+            Ok(SharedOutbound(Arc::new(out)).with_retry(DEFAULT_RETRY_ATTEMPTS))
         }
 
         ProxyProtocol::Trojan { password, .. } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
             let out = TrojanOutbound::new(&node.server, node.port, password, tls_config);
-            SharedOutbound(Arc::new(out))
+            Ok(SharedOutbound(Arc::new(out)).with_retry(DEFAULT_RETRY_ATTEMPTS))
         }
 
         ProxyProtocol::Shadowsocks {
@@ -38,7 +42,7 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
         } => {
             let normalized_cipher = normalize_ss_cipher(cipher);
             let out = SsOutbound::new(&node.server, node.port, normalized_cipher, password)?;
-            SharedOutbound(Arc::new(out))
+            Ok(SharedOutbound(Arc::new(out)).with_retry(DEFAULT_RETRY_ATTEMPTS))
         }
 
         ProxyProtocol::VMess { uuid, cipher, .. } => {
@@ -49,9 +53,13 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
                 cipher,
                 node.transport.as_ref(),
             )?;
-            SharedOutbound(Arc::new(out))
+            Ok(SharedOutbound(Arc::new(out)).with_retry(DEFAULT_RETRY_ATTEMPTS))
         }
 
+        // QUIC-based protocols: no outer retry wrapper.
+        // TuicOutbound::get_connection() caches the QUIC connection and reconnects
+        // automatically when it detects the connection is closed. Outer retry would
+        // only add multiples of the QUIC handshake timeout on dead servers.
         ProxyProtocol::Tuic {
             uuid,
             password,
@@ -67,17 +75,15 @@ pub fn create_outbound(node: &Node) -> Result<SharedOutbound> {
                 congestion_control,
                 tls_config,
             )?;
-            SharedOutbound(Arc::new(out))
+            Ok(SharedOutbound(Arc::new(out)))
         }
 
         ProxyProtocol::Hysteria2 { password, .. } => {
             let tls_config = node.transport.as_ref().and_then(|t| t.tls.as_ref());
             let out = Hysteria2Outbound::new(&node.server, node.port, password, tls_config)?;
-            SharedOutbound(Arc::new(out))
+            Ok(SharedOutbound(Arc::new(out)))
         }
-    };
-
-    Ok(outbound.with_retry(DEFAULT_RETRY_ATTEMPTS))
+    }
 }
 
 #[cfg(test)]
