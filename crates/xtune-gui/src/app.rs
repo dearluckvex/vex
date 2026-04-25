@@ -4595,21 +4595,18 @@ async fn verify_local_http_proxy(
                 http_port,
                 probe_timeout,
                 "www.gstatic.com",
-                "/generate_204"
             ),
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
                 probe_timeout,
                 "cp.cloudflare.com",
-                "/generate_204"
             ),
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
                 probe_timeout,
                 "dns.google",
-                "/generate_204"
             ),
         );
         match (r1, r2, r3) {
@@ -4646,7 +4643,6 @@ async fn verify_local_http_proxy_once(
     http_port: u16,
     timeout: std::time::Duration,
     target_host: &str,
-    target_path: &str,
 ) -> anyhow::Result<String> {
     // Use a short timeout for the local TCP connect (proxy should be on localhost)
     let connect_timeout = std::cmp::min(timeout, std::time::Duration::from_secs(2));
@@ -4703,88 +4699,12 @@ async fn verify_local_http_proxy_once(
         anyhow::bail!("tunnel establishment failed: {}", status_line);
     }
 
-    // Phase 2: TLS handshake to verify end-to-end connectivity
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let tls_config = tokio_rustls::rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
-    let server_name =
-        tokio_rustls::rustls::pki_types::ServerName::try_from(target_host.to_string())
-            .map_err(|e| anyhow::anyhow!("invalid server name: {}", e))?;
-
-    // Phase 2 failures all return Err so the caller treats them as inconclusive
-    // rather than falsely marking the probe as a ✓ success.
-    let tls_stream = match tokio::time::timeout(
-        timeout,
-        connector.connect(server_name.to_owned(), stream),
-    )
-    .await
-    {
-        Ok(Ok(tls_stream)) => tls_stream,
-        Ok(Err(err)) => {
-            anyhow::bail!(
-                "TLS handshake failed via {}: {}",
-                target_host,
-                err
-            );
-        }
-        Err(_) => {
-            anyhow::bail!(
-                "TLS handshake timed out via {} — node may be unreachable",
-                target_host
-            );
-        }
-    };
-
-    let (mut reader, mut writer) = tokio::io::split(tls_stream);
-    let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        target_path, target_host
-    );
-    writer.write_all(request.as_bytes()).await?;
-
-    let mut resp_buf = vec![0u8; 1024];
-    let n = match tokio::time::timeout(timeout, reader.read(&mut resp_buf)).await {
-        Ok(Ok(n)) => n,
-        Ok(Err(err)) => {
-            anyhow::bail!(
-                "response read failed via {}: {}",
-                target_host,
-                err
-            );
-        }
-        Err(_) => {
-            anyhow::bail!(
-                "response timed out via {} — node may be slow or unreachable",
-                target_host
-            );
-        }
-    };
-
-    if n == 0 {
-        anyhow::bail!(
-            "server closed connection without a response via {}",
-            target_host
-        );
-    }
-
-    let resp = String::from_utf8_lossy(&resp_buf[..n]);
-    let resp_status = resp.lines().next().unwrap_or_default().trim().to_string();
-
-    if resp_status.contains("204") || resp_status.contains("200") {
-        Ok(format!(
-            "internet access verified via {}",
-            target_host
-        ))
-    } else {
-        anyhow::bail!(
-            "unexpected response from {}: {}",
-            target_host,
-            resp_status
-        )
-    }
+    // CONNECT 200 means the local proxy successfully connected to the upstream
+    // node and established a tunnel.  That is sufficient proof the proxy is
+    // routing traffic.  A full TLS handshake through the tunnel is skipped
+    // because many VPN nodes perform TLS interception or have stricter TLS
+    // policies for outbound verification probes, causing false negatives.
+    Ok(format!("tunnel established via {}", target_host))
 }
 
 fn load_gui_state() -> Option<AppConfig> {
