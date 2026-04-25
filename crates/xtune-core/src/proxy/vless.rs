@@ -124,7 +124,7 @@ impl Outbound for VlessOutbound {
                 )
             })?;
 
-            let header = build_vless_request(&self.uuid, &target_host, port);
+            let header = build_vless_request(&self.uuid, &target_host, port)?;
             stream.write_all(&header).await?;
 
             read_vless_response(&mut stream).await?;
@@ -143,7 +143,7 @@ impl Outbound for VlessOutbound {
 /// Format:
 /// [version(1)] [UUID(16)] [addon_len(1)] [addons...]
 /// [command(1)] [port(2, big-endian)] [addr_type(1)] [addr_data...]
-fn build_vless_request(uuid: &[u8; 16], host: &str, port: u16) -> Vec<u8> {
+fn build_vless_request(uuid: &[u8; 16], host: &str, port: u16) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(64);
 
     // Version
@@ -168,11 +168,16 @@ fn build_vless_request(uuid: &[u8; 16], host: &str, port: u16) -> Vec<u8> {
         // Domain name
         buf.push(0x02); // Domain
         let domain_bytes = host.as_bytes();
+        anyhow::ensure!(
+            domain_bytes.len() <= 255,
+            "Domain name too long for VLESS: {} bytes (max 255)",
+            domain_bytes.len()
+        );
         buf.push(domain_bytes.len() as u8);
         buf.extend_from_slice(domain_bytes);
     }
 
-    buf
+    Ok(buf)
 }
 
 /// Read VLESS response header.
@@ -198,7 +203,7 @@ mod tests {
     #[test]
     fn test_build_vless_request_domain() {
         let uuid = [0x01u8; 16];
-        let buf = build_vless_request(&uuid, "example.com", 443);
+        let buf = build_vless_request(&uuid, "example.com", 443).unwrap();
 
         assert_eq!(buf[0], 0x00); // version
         assert_eq!(&buf[1..17], &[0x01u8; 16]); // UUID
@@ -213,7 +218,7 @@ mod tests {
     #[test]
     fn test_build_vless_request_ipv4() {
         let uuid = [0xAA; 16];
-        let buf = build_vless_request(&uuid, "1.2.3.4", 80);
+        let buf = build_vless_request(&uuid, "1.2.3.4", 80).unwrap();
 
         assert_eq!(buf[21], 0x01); // IPv4 type
         assert_eq!(&buf[22..26], &[1, 2, 3, 4]); // IPv4 addr
@@ -222,7 +227,7 @@ mod tests {
     #[test]
     fn test_build_vless_request_ipv6() {
         let uuid = [0xBB; 16];
-        let buf = build_vless_request(&uuid, "::1", 8080);
+        let buf = build_vless_request(&uuid, "::1", 8080).unwrap();
 
         assert_eq!(buf[21], 0x03); // IPv6 type
         let expected_ipv6 = std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).octets();

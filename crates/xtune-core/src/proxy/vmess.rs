@@ -310,6 +310,11 @@ fn build_vmess_header(
         header.extend_from_slice(&ipv6.octets());
     } else {
         header.push(0x02); // Domain
+        anyhow::ensure!(
+            host.len() <= 255,
+            "Domain name too long for VMess: {} bytes (max 255)",
+            host.len()
+        );
         header.push(host.len() as u8);
         header.extend_from_slice(host.as_bytes());
     }

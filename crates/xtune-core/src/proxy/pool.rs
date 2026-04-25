@@ -124,6 +124,7 @@ impl ConnPool {
             q.retain(|pc| pc.created.elapsed() < self.inner.max_age);
         }
 
+        let mut consecutive_failures: u32 = 0;
         loop {
             // Check current size under lock, then release before creating
             let needs_more = {
@@ -135,6 +136,7 @@ impl ConnPool {
             }
             match self.inner.factory.create().await {
                 Ok(stream) => {
+                    consecutive_failures = 0;
                     let mut q = self.inner.conns.lock().await;
                     if q.len() < self.inner.capacity {
                         q.push_back(PooledConn {
@@ -145,7 +147,14 @@ impl ConnPool {
                 }
                 Err(e) => {
                     tracing::debug!("Connection pool: pre-connect failed: {}", e);
-                    break;
+                    // Don't give up on the first failure; transient errors (DNS, TCP reset)
+                    // are common. Try up to 3 consecutive failures before abandoning the
+                    // refill so the pool isn't left permanently underfilled.
+                    consecutive_failures += 1;
+                    if consecutive_failures >= 3 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 }
             }
         }

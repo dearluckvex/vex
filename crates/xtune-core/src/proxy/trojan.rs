@@ -87,7 +87,7 @@ impl Outbound for TrojanOutbound {
                 )
             })?;
 
-            let header = build_trojan_request(&self.password_hash, &target_host, port);
+            let header = build_trojan_request(&self.password_hash, &target_host, port)?;
             stream.write_all(&header).await?;
 
             Ok(stream)
@@ -105,7 +105,7 @@ impl Outbound for TrojanOutbound {
 /// [hex(SHA224(password))] [CRLF]
 /// [command(1)] [addr_type(1)] [addr_data...] [port(2, big-endian)] [CRLF]
 /// [payload...]
-fn build_trojan_request(password_hash: &str, host: &str, port: u16) -> Vec<u8> {
+fn build_trojan_request(password_hash: &str, host: &str, port: u16) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(128);
 
     // Password hash (56 hex characters)
@@ -127,6 +127,11 @@ fn build_trojan_request(password_hash: &str, host: &str, port: u16) -> Vec<u8> {
         // Domain name
         buf.push(0x03); // Domain
         let domain_bytes = host.as_bytes();
+        anyhow::ensure!(
+            domain_bytes.len() <= 255,
+            "Domain name too long for Trojan: {} bytes (max 255)",
+            domain_bytes.len()
+        );
         buf.push(domain_bytes.len() as u8);
         buf.extend_from_slice(domain_bytes);
     }
@@ -137,7 +142,7 @@ fn build_trojan_request(password_hash: &str, host: &str, port: u16) -> Vec<u8> {
     // CRLF
     buf.extend_from_slice(b"\r\n");
 
-    buf
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -154,7 +159,7 @@ mod tests {
     #[test]
     fn test_build_trojan_request_domain() {
         let hash = hex::encode(Sha224::digest(b"pass"));
-        let buf = build_trojan_request(&hash, "example.com", 443);
+        let buf = build_trojan_request(&hash, "example.com", 443).unwrap();
 
         // Password hash (56 bytes) + CRLF (2) = 58
         assert_eq!(&buf[56..58], b"\r\n");
@@ -173,7 +178,7 @@ mod tests {
     #[test]
     fn test_build_trojan_request_ipv4() {
         let hash = hex::encode(Sha224::digest(b"pass"));
-        let buf = build_trojan_request(&hash, "192.168.1.1", 8080);
+        let buf = build_trojan_request(&hash, "192.168.1.1", 8080).unwrap();
 
         assert_eq!(buf[59], 0x01); // IPv4
         assert_eq!(&buf[60..64], &[192, 168, 1, 1]);
