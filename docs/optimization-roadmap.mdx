@@ -43,13 +43,9 @@ cache: RwLock<LruCache<String, RouteAction>>,
 
 ---
 
-### P1：DNS 缓存同样缺少 LRU 驱逐
+### ~~P1：DNS 缓存同样缺少 LRU 驱逐~~（经代码审查，已正确实现，移除此项）
 
-**位置**：`crates/xtune-core/src/dns/mod.rs`
-
-**问题**：DNS resolver 的 cache 注释为"1024 entry LRU"，同样是普通 `HashMap`。高流量场景（或 DNS 泄露攻击面）下持续增长。
-
-**建议**：同上，使用 `LruCache<String, (Vec<IpAddr>, Instant)>`，cap 1024。
+经代码审查（`dns/mod.rs` 第 204-217 行），DNS cache 已正确实现：先 `retain` 清过期条目，再 `min_by_key(last_used)` 驱逐最久未用条目。详见 [deep-analysis.mdx §2](./deep-analysis.mdx)。
 
 ---
 
@@ -312,39 +308,62 @@ fn test_all_latency(&mut self, cx: &mut Context<Self>) {
 
 ---
 
-## 已知 Bug / Edge Case
+### BUG-1：路由 cache 策略：全量清除（非 LRU），触发惊群效应
 
-### BUG-1：路由 cache 无界增长（内存泄漏）
+**位置**：`router/engine.rs` 第 158-162 行
 
-**已在 [性能优化 P1](#p1路由-lru-缓存未实现驱逐策略) 中描述**
+**真实行为**：当 cache 达到 4096 条时，`cache.clear()` 清除**所有**条目（不是驱逐 1 条），导致：
+- 下次 4096 个请求全部 cache miss
+- 多个线程同时写入 cache（写锁争用）
+- 在域名多样的代理场景，此 flush 会周期性触发
 
-严重程度：**中**（长期运行场景下内存持续增长）
+严重程度：**中**（周期性性能抖动）
 
----
-
-### BUG-2：DNS inflight 去重可能 miss 清理
-
-**位置**：`dns/mod.rs` — 查询错误路径
-
-**描述**：`inflight: Mutex<HashMap<String, ...>>` 在查询完成后清理条目。但如果查询 Future 被 drop（调用方超时取消），inflight 条目不会被清理，导致后续相同域名的查询被永久阻塞（等待一个已取消的 Future）。
-
-**修复建议**：使用 tokio::sync::broadcast 或通过 RAII Guard 确保 inflight 在 drop 时清理。
+**修复**：引入 `lru` crate，使用 `LruCache::new(4096)`，每次插入自动驱逐 LRU 条目。
 
 ---
 
-### BUG-3：pool.fill() 可能超额填充
+### BUG-2：relay 统计字节计数几乎永远为 0
 
-**位置**：`pool.rs` — `fill()` 函数
+**位置**：`relay.rs` — `transfer_one()` 和 `Relay::poll()`
 
-**描述**：`fill()` 检查当前 pool 大小并填充到 capacity。但检查和填充之间没有锁保护（两个 `fill()` 任务并发运行时），可能导致 pool 暂时超过 capacity（peak = 2×capacity）。
+**根因**：`transfer_one` 内部的 `transferred` 是局部变量。每次 `ready!` 宏遇到 `Poll::Pending`，函数立即返回，局部 `transferred` 被丢弃。`Relay::poll` 中只在 `Poll::Ready(Ok(n))` 时累积 `this.a_to_b += n`，但 `transfer_one` 只在完全结束（reader EOF + flush）时才返回 `Ready`。
 
-**影响**：轻微，超额连接在下一次 get() 时会被驱逐（age 检查）。
+**效果**：`stats.add_bytes()` 收到的字节数是最后一次 flush 的字节数（接近 0），而非实际传输总量。GUI 中的 ↑/↓ 流量显示**基本无效**。
 
-**修复**：在 fill() 开始时 lock，检查并预留空位数，再并发建立连接。
+严重程度：**中**（统计功能完全失效，但不影响代理正确性）
+
+**修复**：修改 `transfer_one` 签名，接受 `&mut u64` 参数在每次 `poll_write` 成功后立即累积，跨 poll 保持。详见 [deep-analysis.mdx §3](./deep-analysis.mdx)。
 
 ---
 
-### BUG-4：HTTP 代理未过滤 hop-by-hop 头
+### BUG-3：speed_test_node 下载速率永远为 0
+
+**位置**：`speedtest.rs` — `speed_test_node()`
+
+**根因**：测速目标为 `GET /generate_204`，此端点返回 `204 No Content`（无响应体），读取字节数约 200 字节（仅 HTTP 头），`download_kbps` 计算结果约 0 KB/s。
+
+严重程度：**低**（此函数未在 GUI 集成，影响范围有限）
+
+**修复**：将测速目标改为有实际内容的端点（如 `speed.cloudflare.com/__down?bytes=10485760`）。
+
+---
+
+### BUG-4：DNS inflight 条目在所有 caller 被 cancel 时不被清理
+
+**位置**：`dns/mod.rs` — `resolve()` 方法
+
+**描述**：cleanup 在 `get_or_init` 之后执行。如果所有等待该域名的 caller 都被 cancel（timeout），inflight HashMap 中的 Arc<OnceCell> 永久存活（无引用计数降到 0）。下次查询同一域名会复用此旧 OnceCell，行为正确但有轻微内存开销。
+
+严重程度：**低**（域名集合有限，DNS 查询很少被 cancel）
+
+---
+
+### BUG-5（原 BUG-3）：pool.fill() 并发正确性——已确认无 Bug
+
+经代码审查，`schedule_fill()` 的 `filling` 原子变量确保同一时刻只有一个 fill() 运行，`fill()` 内的二次检查防止超额填充。**此项移除**。
+
+### BUG-6：HTTP 代理未过滤 hop-by-hop 头
 
 **位置**：`http.rs` — HTTP GET/POST 转发路径
 
@@ -354,7 +373,7 @@ fn test_all_latency(&mut self, cx: &mut Context<Self>) {
 
 ---
 
-### BUG-5：node.latency_ms 测试失败后永久显示 9999
+### BUG-7：node.latency_ms 测试失败后永久显示 9999
 
 **位置**：`app.rs` — test_node_latency 结果写入 + persist
 
@@ -366,7 +385,7 @@ fn test_all_latency(&mut self, cx: &mut Context<Self>) {
 
 ---
 
-### BUG-6：restart_proxy_with_current_state 无上限重试
+### BUG-8：restart_proxy_with_current_state 无上限重试
 
 **位置**：`app.rs` — restart_proxy_with_current_state()
 
@@ -385,7 +404,7 @@ for _ in 0..20 {
 
 ---
 
-### BUG-7：TUN emergency_restore_routes 竞态
+### BUG-9：TUN emergency_restore_routes 竞态
 
 **位置**：`main.rs` — panic hook + Ctrl+C handler
 
@@ -399,27 +418,28 @@ for _ in 0..20 {
 
 | 编号 | 类别 | 描述 | 优先级 | 难度 |
 |------|------|------|--------|------|
-| P-1 | 性能 | 路由 cache LRU 驱逐 | P1 | 低 |
-| P-2 | 性能 | DNS cache LRU 驱逐 | P1 | 低 |
+| P-1 | 性能/Bug | 路由 cache：全量清除 → LRU | P1 | 低 |
+| ~~P-2~~ | ~~性能~~ | ~~DNS cache LRU 驱逐~~ | ~~P1~~ | ~~低~~ |
 | P-3 | 稳定性 | ConnPool max_age 降低/存活探测 | P1 | 中 |
 | P-4 | 稳定性 | verify 超时分配调整 | P1 | 低 |
 | P-5 | 功能 | UDP ASSOCIATE 实现 | P1 | 高 |
 | P-6 | 功能 | 代理健康检查 + 自动重启 | P1 | 中 |
-| P-7 | Bug | DNS inflight RAII 清理 | P1 | 中 |
+| P-B2 | Bug | relay 统计字节计数修复 | P1 | 中 |
+| P-B3 | Bug | speed_test_node 测速端点修复 | P1 | 低 |
 | P-8 | 稳定性 | SOCKS5 CMD_ASSOCIATE 返回正确错误码 | P2 | 低 |
 | P-9 | 性能 | ConnPool 容量可配置 | P2 | 低 |
 | P-10 | 功能 | 订阅定时自动刷新 | P2 | 中 |
 | P-11 | 功能 | 连接级日志 | P2 | 低 |
 | P-12 | 功能 | 速率测试 GUI 集成 | P2 | 中 |
 | P-13 | 功能 | 本地代理认证 | P2 | 中 |
-| P-14 | Bug | pool.fill() 超额保护 | P2 | 低 |
-| P-15 | Bug | latency_ms 失败后 None 而非 9999 | P2 | 低 |
-| P-16 | Bug | HTTP hop-by-hop 头过滤 | P2 | 低 |
+| P-B4 | Bug | DNS inflight cancel 清理（低风险） | P3 | 低 |
+| P-B7 | Bug | latency_ms 失败后 None 而非 9999 | P2 | 低 |
+| P-B6 | Bug | HTTP hop-by-hop 头过滤 | P2 | 低 |
 | P-17 | 稳定性 | open_bi 重试增加到 3 次 | P3 | 低 |
 | P-18 | 功能 | IPv6 优先开关（GUI） | P3 | 低 |
 | P-19 | 功能 | DNS 自定义设置（GUI） | P3 | 中 |
 | P-20 | 功能 | 代理链支持 | P3 | 高 |
-| P-21 | Bug | TUN cleanup 单次执行保证 | P3 | 低 |
+| P-B9 | Bug | TUN cleanup 单次执行保证 | P3 | 低 |
 | P-22 | Bug | system proxy 仅 managed 时才清除（验证） | P3 | 低 |
 | P-23 | 性能 | TLS 根证书统一缓存 | P3 | 低 |
 | P-24 | 性能 | http_latency_test 复用 keep-alive 连接 | P3 | 中 |
