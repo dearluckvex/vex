@@ -135,6 +135,10 @@ pub struct AppState {
     // Manual node URI input
     node_uri_input: Entity<InputState>,
 
+    // Inline node rename
+    node_rename_input: Entity<InputState>,
+    editing_node_index: Option<usize>,
+
     // Rule editing
     editing_rule_index: Option<usize>,
 
@@ -245,6 +249,9 @@ impl AppState {
             InputState::new(window, cx)
                 .placeholder("vless://... or vmess://... or ss://... or trojan://...")
         });
+        let node_rename_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("New node name")
+        });
 
         let mut state = Self {
             active_view: ActiveView::Home,
@@ -295,6 +302,8 @@ impl AppState {
             subscriptions: persisted.subscriptions.clone(),
             refreshing_subscriptions: std::collections::HashSet::new(),
             node_uri_input,
+            node_rename_input,
+            editing_node_index: None,
             editing_rule_index: None,
             log_buffer,
         };
@@ -2472,8 +2481,8 @@ impl AppState {
             }
             content = content.child(list);
             if let Some(index) = self.selected_node {
-                if let Some(node) = self.nodes.get(index) {
-                    content = content.child(self.render_selected_node_details(node, index));
+                if let Some(node) = self.nodes.get(index).cloned() {
+                    content = content.child(self.render_selected_node_details(&node, index, cx));
                 }
             }
         }
@@ -3937,7 +3946,7 @@ impl AppState {
             )
     }
 
-    fn render_selected_node_details(&self, node: &Node, index: usize) -> Div {
+    fn render_selected_node_details(&mut self, node: &Node, index: usize, cx: &mut Context<Self>) -> Div {
         let status = if self.proxy_running && self.active_proxy_node == Some(index) {
             "Active"
         } else if self.selected_node == Some(index) {
@@ -3957,11 +3966,147 @@ impl AppState {
                 }
             });
 
+        let latency_color = node.latency_ms.map(|ms| {
+            if ms < 100 {
+                SUCCESS_COLOR
+            } else if ms < 300 {
+                WARNING_COLOR
+            } else {
+                DANGER_COLOR
+            }
+        }).unwrap_or(TEXT_MUTED);
+
+        // Subscription source (from sub_url tag)
+        let sub_source = node.extra.get("sub_url").and_then(|url| {
+            self.subscriptions.iter().find(|s| &s.url == url).map(|s| s.name.clone())
+        });
+
+        // UDP support
+        let udp_enabled = match &node.protocol {
+            ProxyProtocol::Shadowsocks { udp, .. } => *udp,
+            ProxyProtocol::VMess { udp, .. } => *udp,
+            ProxyProtocol::VLess { udp, .. } => *udp,
+            ProxyProtocol::Tuic { udp, .. } => *udp,
+            ProxyProtocol::Trojan { udp, .. } => *udp,
+            ProxyProtocol::Hysteria2 { udp, .. } => *udp,
+        };
+
+        // Masked UUID/password (first 8 chars + "…")
+        let masked_id: Option<String> = match &node.protocol {
+            ProxyProtocol::VMess { uuid, .. }
+            | ProxyProtocol::VLess { uuid, .. }
+            | ProxyProtocol::Tuic { uuid, .. } => {
+                Some(format!("{}…", uuid.get(..8).unwrap_or(uuid.as_str())))
+            }
+            _ => None,
+        };
+
+        let is_active = self.proxy_running && self.active_proxy_node == Some(index);
+        let is_editing = self.editing_node_index == Some(index);
+        let node_rename_input = self.node_rename_input.clone();
+
         self.card()
             .child(
-                self.card_title(&format!("Node Details — {}", node.name))
-                    .font(localized_font()),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        self.card_title(&format!("Node Details — {}", node.name))
+                            .font(localized_font()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_1()
+                            .child(if is_editing {
+                                Button::new("rename-cancel-btn")
+                                    .label("✕ Cancel".to_string())
+                                    .tooltip("Cancel rename")
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.editing_node_index = None;
+                                        cx.notify();
+                                    }))
+                            } else {
+                                Button::new("rename-btn")
+                                    .label("✏ Rename".to_string())
+                                    .tooltip("Rename this node")
+                                    .ghost()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.editing_node_index = Some(index);
+                                        let current_name = this.nodes.get(index)
+                                            .map(|n| n.name.clone())
+                                            .unwrap_or_default();
+                                        this.node_rename_input.update(cx, |state, cx| {
+                                            state.set_value(current_name, window, cx);
+                                        });
+                                        cx.notify();
+                                    }))
+                            })
+                            .child(if is_active {
+                                Button::new("deactivate-btn")
+                                    .label("■ Deactivate".to_string())
+                                    .tooltip("Stop proxy and deactivate this node")
+                                    .danger()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.stop_proxy(cx);
+                                    }))
+                            } else {
+                                Button::new("activate-btn")
+                                    .label("▶ Activate".to_string())
+                                    .tooltip("Connect through this node")
+                                    .primary()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.selected_node = Some(index);
+                                        this.start_proxy(cx);
+                                    }))
+                            })
+                            .child(
+                                Button::new("test-lat-btn")
+                                    .label("⚡ Test".to_string())
+                                    .tooltip("Test latency for this node")
+                                    .ghost()
+                                    .loading(self.latency_testing.contains(&index))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.test_node_latency(index, cx);
+                                    })),
+                            ),
+                    ),
             )
+            .when(is_editing, |card| {
+                card.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(gpui_component::input::Input::new(&node_rename_input).w_full()),
+                        )
+                        .child(
+                            Button::new("rename-confirm-btn")
+                                .label("Save".to_string())
+                                .tooltip("Confirm rename")
+                                .primary()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let new_name = this.node_rename_input.read(cx).value().trim().to_string();
+                                    if !new_name.is_empty() {
+                                        if let Some(n) = this.nodes.get_mut(index) {
+                                            n.name = new_name;
+                                        }
+                                        this.persist_gui_state();
+                                    }
+                                    this.editing_node_index = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -3971,10 +4116,36 @@ impl AppState {
                     .child(self.info_row("Protocol", protocol_name(&node.protocol)))
                     .child(self.info_row("Server", &node.server))
                     .child(self.info_row("Port", &node.port.to_string()))
-                    .child(self.info_row("Latency", &latency_str))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .w(px(130.0))
+                                    .text_sm()
+                                    .text_color(rgb(TEXT_SECONDARY))
+                                    .child("Latency"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(latency_color))
+                                    .child(latency_str),
+                            ),
+                    )
                     .child(self.info_row("Transport", &transport_summary(node.transport.as_ref())))
                     .child(self.info_row("Security", &security_summary(node)))
                     .child(self.info_row("Auth", &auth_summary(&node.protocol)))
+                    .when_some(masked_id, |d, id| {
+                        d.child(self.info_row("UUID (partial)", &id))
+                    })
+                    .child(self.info_row("UDP", if udp_enabled { "Enabled" } else { "Disabled" }))
+                    .when_some(sub_source, |d, name| {
+                        d.child(self.info_row("Subscription", &name))
+                    })
                     .child(
                         div()
                             .text_xs()
