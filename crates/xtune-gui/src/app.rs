@@ -571,38 +571,30 @@ impl AppState {
 
         let restore_tun = self.tun_enabled;
         let handle = self.tokio_handle.clone();
+        // stop_proxy() sets proxy_running = false immediately; we only need a
+        // brief pause so the OS releases the port before the new bind attempt.
         self.stop_proxy(cx);
 
         cx.spawn(async move |weak, cx| {
-            let mut proxy_started = false;
-            for _ in 0..20 {
-                handle
-                    .spawn(async {
-                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                    })
-                    .await
-                    .ok();
+            handle
+                .spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                })
+                .await
+                .ok();
 
-                proxy_started = weak
-                    .update(cx, |this: &mut AppState, cx| {
-                        if this.proxy_running {
-                            false
-                        } else {
-                            this.start_proxy(cx);
-                            true
-                        }
-                    })
-                    .unwrap_or(false);
-
-                if proxy_started {
-                    break;
-                }
-            }
+            let proxy_started = weak
+                .update(cx, |this: &mut AppState, cx| {
+                    this.start_proxy(cx);
+                    true
+                })
+                .unwrap_or(false);
 
             if !restore_tun || !proxy_started {
                 return;
             }
 
+            // Wait for the proxy to finish starting before re-enabling TUN.
             for _ in 0..20 {
                 handle
                     .spawn(async {
