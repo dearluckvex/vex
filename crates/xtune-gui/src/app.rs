@@ -1810,6 +1810,24 @@ impl AppState {
 
         let cur_mode = self.proxy_mode.clone();
 
+        // Derive startup phase from existing status strings (no extra field needed):
+        // 0 = idle, 1 = service starting, 2 = connected+verifying, 3 = verified
+        let startup_phase: u8 = if !self.proxy_running {
+            if self.proxy_status.starts_with("Connecting")
+                || self.proxy_status == "Disconnecting..."
+            {
+                1
+            } else {
+                0
+            }
+        } else if self.proxy_validation_status.contains("Verifying")
+            || self.proxy_validation_status.contains("Waiting")
+        {
+            2
+        } else {
+            3
+        };
+
         div()
             .flex()
             .flex_col()
@@ -2058,13 +2076,14 @@ impl AppState {
                                     }
                                 }),
                         )
+                        // Startup progress steps (only shown while connecting/verifying)
+                        .when(startup_phase >= 1 && startup_phase <= 2, |d| {
+                            d.child(
+                                div().mt_1().child(render_proxy_steps(startup_phase)),
+                            )
+                        })
                         .child(
                             div()
-                                .text_sm()
-                                .text_color(rgb(TEXT_SECONDARY))
-                                .font(localized_font())
-                                .child(format!("Selected Node: {}", selected_name)),
-                        )
                         .child(
                             div()
                                 .text_sm()
@@ -4157,6 +4176,73 @@ impl AppState {
 }
 
 // === Helpers ===
+
+/// Render a 3-step startup progress bar for the proxy connection.
+/// `phase`: 0 = idle, 1 = service starting, 2 = verifying, 3 = done
+fn render_proxy_steps(phase: u8) -> Div {
+    let step_dot = |completed: bool, active: bool| {
+        let (bg_color, border_color) = if completed {
+            (SUCCESS_COLOR, SUCCESS_COLOR)
+        } else if active {
+            (ACCENT_DIM, ACCENT_DIM)
+        } else {
+            (0x2a3050u32, 0x3a4060u32)
+        };
+        div()
+            .w(px(8.0))
+            .h(px(8.0))
+            .rounded_full()
+            .bg(rgb(bg_color))
+            .border_1()
+            .border_color(rgb(border_color))
+    };
+    let step_line = |filled: bool| {
+        let color = if filled { SUCCESS_COLOR } else { 0x2a3050u32 };
+        div()
+            .h(px(2.0))
+            .w(px(32.0))
+            .bg(rgb(color))
+    };
+    let step_label = |text: &str, active: bool, done: bool| {
+        let color = if done {
+            SUCCESS_COLOR
+        } else if active {
+            ACCENT_DIM
+        } else {
+            TEXT_MUTED
+        };
+        div()
+            .text_2xs()
+            .text_color(rgb(color))
+            .child(text.to_string())
+    };
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        // Step 1
+        .child(
+            div().flex().flex_col().items_center().gap_0p5()
+                .child(step_dot(phase >= 2, phase == 1))
+                .child(step_label("Start", phase == 1, phase >= 2)),
+        )
+        .child(step_line(phase >= 2))
+        // Step 2
+        .child(
+            div().flex().flex_col().items_center().gap_0p5()
+                .child(step_dot(phase >= 3, phase == 2))
+                .child(step_label("Verify", phase == 2, phase >= 3)),
+        )
+        .child(step_line(phase >= 3))
+        // Step 3
+        .child(
+            div().flex().flex_col().items_center().gap_0p5()
+                .child(step_dot(phase >= 3, false))
+                .child(step_label("Done", false, phase >= 3)),
+        )
+}
 
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
