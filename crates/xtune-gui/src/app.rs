@@ -492,6 +492,9 @@ impl AppState {
                 if this.proxy_session_id != session_id {
                     return;
                 }
+                // System proxy was already cleared in stop_proxy().  Only
+                // handle the case where the proxy service terminated on its
+                // own (crash/error) without stop_proxy() being called.
                 if this.system_proxy_managed_by_app {
                     match clear_os_proxy() {
                         Ok(()) => {
@@ -503,6 +506,8 @@ impl AppState {
                         }
                     }
                 }
+                // These are already false/None when stop_proxy() was called;
+                // set them here too to handle the self-termination path.
                 this.proxy_running = false;
                 this.proxy_stop_tx = None;
                 this.proxy_stats = None;
@@ -541,8 +546,18 @@ impl AppState {
         if let Some(tx) = self.proxy_stop_tx.take() {
             let _ = tx.send(());
         }
+        // Immediately reflect disconnected state in the UI so the user sees
+        // the change on the same frame as the click, rather than waiting for
+        // the background Tokio task to finish service.stop() and call back.
+        // The background task's cleanup callback will still run and update
+        // proxy_status to "Disconnected" (or an error string), completing the
+        // transition.  These double-sets are harmless; session_id guards
+        // prevent any stale callback from clobbering a new session.
+        self.proxy_running = false;
+        self.proxy_stats = None;
+        self.active_proxy_node = None;
+        self.proxy_validation_status = "Not validated".to_string();
         self.proxy_status = "Disconnecting...".to_string();
-        self.proxy_validation_status = "Stopping local proxy".to_string();
         cx.notify();
     }
 
