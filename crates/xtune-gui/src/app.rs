@@ -115,6 +115,8 @@ pub struct AppState {
     // Node search filter
     node_filter: String,
     node_filter_input: Entity<InputState>,
+    // Protocol chip filter — None means "All", Some("ss") etc. restricts to one protocol
+    protocol_filter: Option<&'static str>,
 
     // Nodes currently being latency-tested
     latency_testing: std::collections::HashSet<usize>,
@@ -283,6 +285,7 @@ impl AppState {
             rule_target_input,
             node_filter: String::new(),
             node_filter_input,
+            protocol_filter: None,
             latency_testing: std::collections::HashSet::new(),
             latency_failed: std::collections::HashSet::new(),
             latency_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
@@ -2222,7 +2225,7 @@ impl AppState {
     fn render_nodes(&mut self, cx: &mut Context<Self>) -> Div {
         let node_count = self.nodes.len();
 
-        // Read and apply filter
+        // Read and apply text filter
         let filter_text = self
             .node_filter_input
             .read(cx)
@@ -2232,20 +2235,41 @@ impl AppState {
         if filter_text != self.node_filter {
             self.node_filter = filter_text.clone();
         }
-        let filtered_indices: Vec<usize> = if filter_text.is_empty() {
-            (0..node_count).collect()
-        } else {
-            (0..node_count)
-                .filter(|&i| {
-                    let n = &self.nodes[i];
-                    n.name.to_lowercase().contains(&filter_text)
-                        || n.server.to_lowercase().contains(&filter_text)
-                        || protocol_short_name(&n.protocol)
-                            .to_lowercase()
-                            .contains(&filter_text)
-                })
+
+        // Collect distinct protocols present in the node list for chips
+        let mut present_protocols: Vec<&'static str> = {
+            let mut seen = std::collections::HashSet::new();
+            self.nodes
+                .iter()
+                .map(|n| protocol_short_name(&n.protocol))
+                .filter(|s| seen.insert(*s))
                 .collect()
         };
+        // Stable order: SS, VMess, VLESS, Trojan, TUIC, Hy2
+        let protocol_order = ["ss", "vmess", "vless", "trojan", "tuic", "hy2"];
+        present_protocols.sort_by_key(|p| {
+            protocol_order.iter().position(|o| o == p).unwrap_or(99)
+        });
+
+        let proto_filter = self.protocol_filter;
+        let filtered_indices: Vec<usize> = (0..node_count)
+            .filter(|&i| {
+                let n = &self.nodes[i];
+                // Protocol chip filter
+                let proto_match = match proto_filter {
+                    None => true,
+                    Some(pf) => protocol_short_name(&n.protocol) == pf,
+                };
+                // Text filter
+                let text_match = filter_text.is_empty()
+                    || n.name.to_lowercase().contains(&filter_text)
+                    || n.server.to_lowercase().contains(&filter_text)
+                    || protocol_short_name(&n.protocol)
+                        .to_lowercase()
+                        .contains(&filter_text);
+                proto_match && text_match
+            })
+            .collect();
         let shown_count = filtered_indices.len();
         let node_filter_input = self.node_filter_input.clone();
 
@@ -2353,7 +2377,59 @@ impl AppState {
                             }))
                             .when(!has_filter, |b| b.disabled(true))
                     }),
-            );
+            )
+            .child({
+                // Protocol chip filter row — only shown when nodes are present
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .flex_wrap()
+                    .items_center();
+
+                if !present_protocols.is_empty() {
+                    // "All" chip
+                    let all_active = proto_filter.is_none();
+                    row = row.child(
+                        Button::new("proto-all")
+                            .label("All".to_string())
+                            .tooltip("Show all protocols")
+                            .when(all_active, |b| b.primary())
+                            .when(!all_active, |b| b.ghost())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.protocol_filter = None;
+                                cx.notify();
+                            })),
+                    );
+
+                    for proto_key in &present_protocols {
+                        let key: &'static str = proto_key;
+                        let active = proto_filter == Some(key);
+                        let display = match key {
+                            "ss" => "SS",
+                            "vmess" => "VMess",
+                            "vless" => "VLESS",
+                            "trojan" => "Trojan",
+                            "tuic" => "TUIC",
+                            "hy2" => "Hy2",
+                            _ => key,
+                        };
+                        let btn_id = format!("proto-{}", key);
+                        row = row.child(
+                            Button::new(SharedString::from(btn_id))
+                                .label(display.to_string())
+                                .tooltip(format!("Show only {} nodes", display))
+                                .when(active, |b| b.primary())
+                                .when(!active, |b| b.ghost())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.protocol_filter = Some(key);
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                }
+                row
+            });
 
         if node_count == 0 {
             content = content.child(
