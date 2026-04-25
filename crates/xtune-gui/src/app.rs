@@ -114,6 +114,8 @@ pub struct AppState {
     latency_testing: std::collections::HashSet<usize>,
     // Semaphore to cap concurrent latency tests and avoid network saturation
     latency_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    // Debounce flag: a persist task is already scheduled (avoid 50+ writes during batch test)
+    pending_persist: bool,
 
     // Manual node URI input
     node_uri_input: Entity<InputState>,
@@ -270,6 +272,7 @@ impl AppState {
             node_filter_input,
             latency_testing: std::collections::HashSet::new(),
             latency_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
+            pending_persist: false,
             node_uri_input,
             editing_rule_index: None,
             log_buffer,
@@ -724,7 +727,7 @@ impl AppState {
                         Ok(Err(_)) | Err(_) => n.latency_ms = None,
                     }
                 }
-                this.persist_gui_state();
+                this.schedule_persist(cx); // debounced: coalesces N node completions → 1 write
                 cx.notify();
             })
             .ok();
@@ -1179,6 +1182,24 @@ impl AppState {
         if let Err(err) = save_gui_state(&config) {
             tracing::error!("failed to persist GUI state: {}", err);
         }
+    }
+
+    /// Debounced persist: coalesces multiple rapid calls (e.g. batch latency tests)
+    /// into a single disk write 500ms after the last call.
+    fn schedule_persist(&mut self, cx: &mut Context<Self>) {
+        if self.pending_persist {
+            return; // write already queued
+        }
+        self.pending_persist = true;
+        cx.spawn(async move |weak, cx| {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            weak.update(cx, |this, _cx| {
+                this.pending_persist = false;
+                this.persist_gui_state();
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 

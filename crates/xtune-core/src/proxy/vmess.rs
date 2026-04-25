@@ -194,8 +194,12 @@ impl Outbound for VMessOutbound {
                 header,
                 req_body_key,
                 req_body_iv,
-                resp_body_key_full[..16].try_into().unwrap(),
-                resp_body_iv_full[..16].try_into().unwrap(),
+                resp_body_key_full[..16]
+                    .try_into()
+                    .expect("sha256 output is 32 bytes, first 16 is always valid"),
+                resp_body_iv_full[..16]
+                    .try_into()
+                    .expect("sha256 output is 32 bytes, first 16 is always valid"),
                 resp_auth,
                 self.security,
             )
@@ -266,7 +270,7 @@ fn build_vmess_header(
     let cmd_key = vmess_cmd_key(uuid);
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default() // fallback to epoch 0 on impossible clock-before-1970 error
         .as_secs();
     let auth_id = create_auth_id(&cmd_key, timestamp);
 
@@ -421,13 +425,15 @@ impl VMessChunkCipher {
     fn new(security: VMessSecurity, key: &[u8; 16], iv: &[u8; 16]) -> Self {
         match security {
             VMessSecurity::Aes128Gcm | VMessSecurity::Auto => {
-                let cipher = Aes128Gcm::new_from_slice(key).unwrap();
+                let cipher = Aes128Gcm::new_from_slice(key)
+                    .expect("AES-128-GCM key is exactly 16 bytes");
                 VMessChunkCipher::Aes128Gcm { cipher, iv: *iv }
             }
             VMessSecurity::Chacha20Poly1305 => {
                 use chacha20poly1305::KeyInit;
                 let key32 = generate_chacha_key(key);
-                let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(&key32).unwrap();
+                let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(&key32)
+                    .expect("ChaCha20 key is exactly 32 bytes");
                 VMessChunkCipher::Chacha20Poly1305 { cipher, iv: *iv }
             }
             VMessSecurity::None | VMessSecurity::Zero => VMessChunkCipher::None,

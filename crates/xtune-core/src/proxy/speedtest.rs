@@ -23,16 +23,15 @@ pub async fn speed_test_node(
 ) -> Result<SpeedTestResult> {
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
-    // Phase 1: Latency — connect through the proxy to www.gstatic.com:80
+    // Phase 1: Latency — connect through the proxy to speed.cloudflare.com:80
     let start = std::time::Instant::now();
-    let mut stream = tokio::time::timeout(timeout, outbound.connect("www.gstatic.com", 80))
+    let mut stream = tokio::time::timeout(timeout, outbound.connect("speed.cloudflare.com", 80))
         .await
         .map_err(|_| anyhow::anyhow!("connection timed out"))??;
     let latency_ms = start.elapsed().as_millis() as u32;
 
-    // Phase 2: Download speed — request a ~200 KB test payload
-    let request =
-        b"GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n";
+    // Phase 2: Download speed — request a 1 MB test payload from Cloudflare's speed endpoint
+    let request = b"GET /__down?bytes=1048576 HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n";
     stream.write_all(request).await?;
 
     let dl_start = std::time::Instant::now();
@@ -51,9 +50,9 @@ pub async fn speed_test_node(
     }
     let dl_elapsed = dl_start.elapsed();
 
-    // /generate_204 returns a very small body; if we got a valid response
-    // we know the connection works. Calculate speed from what we got.
-    let download_kbps = if total_bytes > 0 && dl_elapsed.as_millis() > 0 {
+    // Cloudflare __down returns exactly the requested number of bytes;
+    // calculate throughput from the actual bytes received vs elapsed time.
+    let download_kbps = if total_bytes > 100 && dl_elapsed.as_millis() > 0 {
         Some(((total_bytes as f64 / 1024.0) / dl_elapsed.as_secs_f64()) as u32)
     } else {
         None
