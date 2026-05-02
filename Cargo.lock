@@ -7641,6 +7641,77 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vex-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vex-core",
+]
+
+[[package]]
+name = "vex-core"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "base64",
+ "bytes",
+ "chacha20poly1305",
+ "etherparse",
+ "h3",
+ "h3-quinn",
+ "hex",
+ "hmac",
+ "http",
+ "ipstack",
+ "log 0.4.29",
+ "lru",
+ "md-5",
+ "quinn",
+ "rand 0.9.4",
+ "reqwest",
+ "rustls 0.23.38",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "shadowsocks",
+ "socket2 0.5.10",
+ "sysproxy",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls 0.25.0",
+ "tokio-rustls 0.26.4",
+ "tracing",
+ "tun",
+ "url",
+ "urlencoding",
+ "uuid",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "vex-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui-component",
+ "serde_yaml",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tracing",
+ "tracing-subscriber",
+ "vex-core",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "vswhom"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8850,77 +8921,6 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
-
-[[package]]
-name = "xtune-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde_yaml",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "xtune-core",
-]
-
-[[package]]
-name = "xtune-core"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "base64",
- "bytes",
- "chacha20poly1305",
- "etherparse",
- "h3",
- "h3-quinn",
- "hex",
- "hmac",
- "http",
- "ipstack",
- "log 0.4.29",
- "lru",
- "md-5",
- "quinn",
- "rand 0.9.4",
- "reqwest",
- "rustls 0.23.38",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "shadowsocks",
- "socket2 0.5.10",
- "sysproxy",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls 0.25.0",
- "tokio-rustls 0.26.4",
- "tracing",
- "tun",
- "url",
- "urlencoding",
- "uuid",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "xtune-gui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gpui",
- "gpui-component",
- "serde_yaml",
- "tokio",
- "tokio-rustls 0.26.4",
- "tracing",
- "tracing-subscriber",
- "webpki-roots 0.26.11",
- "xtune-core",
-]
 
 [[package]]
 name = "y4m"

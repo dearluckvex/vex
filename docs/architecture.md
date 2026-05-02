@@ -1,4 +1,4 @@
-# XTune 技术架构设计
+# Vex 技术架构设计
 
 ## 技术选型
 
@@ -17,10 +17,10 @@
 ## 项目结构
 
 ```
-xtune/
+vex/
 ├── Cargo.toml                 # workspace root
 ├── crates/
-│   ├── xtune-core/            # 核心库: 协议、配置、路由
+│   ├── vex-core/            # 核心库: 协议、配置、路由
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── config/        # 配置解析 (Clash/V2Ray/Karing)
@@ -41,7 +41,7 @@ xtune/
 │   │   │   ├── router/        # 规则路由引擎
 │   │   │   └── dns/           # DNS 解析
 │   │   └── Cargo.toml
-│   ├── xtune-gui/             # GUI 应用 (GPUI)
+│   ├── vex-gui/             # GUI 应用 (GPUI)
 │   │   ├── src/
 │   │   │   ├── main.rs
 │   │   │   ├── app.rs         # 应用主框架
@@ -52,7 +52,7 @@ xtune/
 │   │   │   │   └── settings.rs# 设置页面
 │   │   │   └── components/    # 自定义组件
 │   │   └── Cargo.toml
-│   └── xtune-cli/             # CLI 工具 (Linux 路由器)
+│   └── vex-cli/             # CLI 工具 (Linux 路由器)
 │       ├── src/main.rs
 │       └── Cargo.toml
 └── docs/                      # 文档
@@ -64,14 +64,14 @@ xtune/
 ┌─────────────────────────────────────────────────────┐
 │              用户界面层 (UI Layer)                    │
 │  ┌───────────────────┐  ┌────────────────────────┐  │
-│  │  xtune-gui (GPUI) │  │  xtune-cli (Terminal)  │  │
+│  │  vex-gui (GPUI) │  │  vex-cli (Terminal)  │  │
 │  │  桌面 GUI 客户端   │  │  路由器/服务器 CLI     │  │
 │  └────────┬──────────┘  └──────────┬─────────────┘  │
 └───────────┼────────────────────────┼────────────────┘
             │                        │
             ▼                        ▼
 ┌─────────────────────────────────────────────────────┐
-│              核心库 (xtune-core)                     │
+│              核心库 (vex-core)                     │
 │                                                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  │
 │  │ 配置系统      │  │ 本地代理服务  │  │ 路由引擎  │  │
@@ -117,7 +117,7 @@ xtune/
 - 使用 `sysproxy-rs` 在各平台设置系统代理
 
 ### 2. shoes 服务端适配
-shoes 支持的协议（XTune 需要兼容的）：
+shoes 支持的协议（Vex 需要兼容的）：
 - VMess AEAD (`aes-128-gcm`, `chacha20-poly1305`, `none`)
 - VLESS（含 XTLS Vision）
 - Shadowsocks（含 2022 AEAD）

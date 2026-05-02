@@ -1,0 +1,318 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Release (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            cli_artifact: vex-cli
+            gui_artifact: vex
+            cli_asset: vex-cli-linux-x86_64
+            gui_asset: vex-linux-x86_64
+            ext: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            cli_artifact: vex-cli
+            gui_artifact: vex
+            cli_asset: vex-cli-linux-aarch64
+            gui_asset: vex-linux-aarch64
+            ext: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            cli_artifact: vex-cli
+            gui_artifact: vex
+            cli_asset: vex-cli-macos-x86_64
+            gui_asset: vex-macos-x86_64
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            cli_artifact: vex-cli
+            gui_artifact: vex
+            cli_asset: vex-cli-macos-aarch64
+            gui_asset: vex-macos-aarch64
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cli_artifact: vex-cli.exe
+            gui_artifact: vex.exe
+            cli_asset: vex-cli-windows-x86_64.exe
+            gui_asset: vex-windows-x86_64.exe
+            ext: ".exe"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-release-cargo-
+
+      # ── Linux system dependencies ──────────────────────────────────────────
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libvulkan-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            pkg-config \
+            clang
+
+      # ── macOS system dependencies ──────────────────────────────────────────
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install pkg-config
+
+      # ── Build release binaries ─────────────────────────────────────────────
+      - name: Build release (CLI)
+        run: cargo build --package vex-cli --release --target ${{ matrix.target }}
+
+      - name: Build release (GUI)
+        # GUI may not build headlessly on Linux; continue so CLI still uploads
+        continue-on-error: ${{ runner.os == 'Linux' }}
+        run: cargo build --package vex-gui --release --target ${{ matrix.target }}
+
+      # ── Prepare artifacts (Unix) ───────────────────────────────────────────
+      - name: Prepare artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.cli_artifact }} \
+             ${{ matrix.cli_asset }}
+          if [ -f "target/${{ matrix.target }}/release/${{ matrix.gui_artifact }}" ]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.gui_artifact }} \
+               ${{ matrix.gui_asset }}
+          fi
+
+      - name: Prepare artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.cli_artifact }}" `
+                    "${{ matrix.cli_asset }}"
+          if (Test-Path "target\${{ matrix.target }}\release\${{ matrix.gui_artifact }}") {
+            Copy-Item "target\${{ matrix.target }}\release\${{ matrix.gui_artifact }}" `
+                      "${{ matrix.gui_asset }}"
+          }
+
+      # ── macOS Code Signing ─────────────────────────────────────────────────
+      # Required secrets:
+      #   MACOS_CERTIFICATE      – base64-encoded Developer ID .p12 certificate
+      #   MACOS_CERTIFICATE_PWD  – password for the .p12
+      #   MACOS_IDENTITY         – e.g. "Developer ID Application: Name (TEAMID)"
+      # Optional notarization secrets:
+      #   APPLE_ID               – your Apple ID email
+      #   APPLE_TEAM_ID          – 10-char team ID
+      #   APPLE_APP_PASSWORD     – app-specific password
+      - name: Sign binaries (macOS)
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_IDENTITY: ${{ secrets.MACOS_IDENTITY }}
+        run: |
+          # Import certificate into a temporary keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PWD=$(openssl rand -hex 16)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          # Sign binaries
+          for bin in "${{ matrix.cli_asset }}" "${{ matrix.gui_asset }}"; do
+            if [ -f "$bin" ]; then
+              codesign --deep --force --verify --verbose \
+                --options runtime \
+                --sign "$MACOS_IDENTITY" "$bin"
+            fi
+          done
+
+      - name: Notarize binaries (macOS)
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          MACOS_IDENTITY: ${{ secrets.MACOS_IDENTITY }}
+        run: |
+          for bin in "${{ matrix.cli_asset }}" "${{ matrix.gui_asset }}"; do
+            if [ -f "$bin" ]; then
+              # Wrap in a zip for notarization submission
+              zip "$bin.zip" "$bin"
+              xcrun notarytool submit "$bin.zip" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_PASSWORD" \
+                --wait
+              xcrun stapler staple "$bin" || true   # staple only works on bundles
+              rm "$bin.zip"
+            fi
+          done
+
+      # ── Windows Code Signing ───────────────────────────────────────────────
+      # Required secrets:
+      #   WINDOWS_CERTIFICATE      – base64-encoded .pfx code-signing certificate
+      #   WINDOWS_CERTIFICATE_PWD  – password for the .pfx
+      - name: Sign binaries (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PWD: ${{ secrets.WINDOWS_CERTIFICATE_PWD }}
+        shell: pwsh
+        run: |
+          $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $certPath  = "$env:RUNNER_TEMP\cert.pfx"
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe"
+          foreach ($bin in @("${{ matrix.cli_asset }}", "${{ matrix.gui_asset }}")) {
+            if (Test-Path $bin) {
+              & $signtool sign `
+                /f  $certPath `
+                /p  $env:WINDOWS_CERTIFICATE_PWD `
+                /tr http://timestamp.sectigo.com `
+                /td sha256 `
+                /fd sha256 `
+                $bin
+            }
+          }
+          Remove-Item $certPath -Force
+
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.cli_asset }}
+            ${{ matrix.gui_asset }}
+          generate_release_notes: true
+
+  # ── Merlin Router Plugin ───────────────────────────────────────────────────
+  # Builds CLI for armv7 (musleabihf) and aarch64 (musl), then packages
+  # them together with all plugin scripts into vex-merlin-*.tar.gz archives.
+  merlin-package:
+    name: Merlin Plugin (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: armv7
+            target: armv7-unknown-linux-musleabihf
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: merlin-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: merlin-${{ matrix.arch }}-cargo-
+
+      - name: Install cross-compilation toolchain
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross --locked 2>/dev/null \
+            || cargo install cross --locked
+
+      - name: Cross-compile CLI for ${{ matrix.arch }}
+        run: |
+          cross build --package vex-cli --release --target ${{ matrix.target }}
+
+      - name: Assemble Merlin plugin package
+        run: |
+          PKG_NAME="vex-merlin-${{ matrix.arch }}"
+          PKG_DIR="$PKG_NAME"
+
+          # Directory layout mirrors the installer's expectations
+          mkdir -p "$PKG_DIR/bin"
+          mkdir -p "$PKG_DIR/scripts"
+          mkdir -p "$PKG_DIR/webui/cgi-bin"
+          mkdir -p "$PKG_DIR/webui/pages"
+
+          # Binary
+          cp "target/${{ matrix.target }}/release/vex-cli" \
+             "$PKG_DIR/bin/vex-cli-${{ matrix.arch }}"
+          chmod +x "$PKG_DIR/bin/vex-cli-${{ matrix.arch }}"
+
+          # Plugin files
+          cp merlin/install.sh        "$PKG_DIR/"
+          cp merlin/uninstall.sh      "$PKG_DIR/"
+          cp merlin/config.yaml.template "$PKG_DIR/"
+          cp merlin/scripts/vex.sh       "$PKG_DIR/scripts/"
+          cp merlin/scripts/iptables.sh  "$PKG_DIR/scripts/"
+          cp merlin/scripts/dnsmasq.conf "$PKG_DIR/scripts/"
+          cp merlin/webui/cgi-bin/vex.cgi   "$PKG_DIR/webui/cgi-bin/"
+          cp merlin/webui/pages/vex.asp     "$PKG_DIR/webui/pages/"
+
+          chmod +x "$PKG_DIR/install.sh" \
+                   "$PKG_DIR/uninstall.sh" \
+                   "$PKG_DIR/scripts/vex.sh" \
+                   "$PKG_DIR/scripts/iptables.sh" \
+                   "$PKG_DIR/webui/cgi-bin/vex.cgi"
+
+          # Create tarball
+          tar -czf "${PKG_NAME}.tar.gz" "$PKG_DIR"
+          echo "Package: $(du -sh ${PKG_NAME}.tar.gz | cut -f1)  ${PKG_NAME}.tar.gz"
+
+      - name: Upload Merlin package to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: vex-merlin-${{ matrix.arch }}.tar.gz
+          generate_release_notes: false
+

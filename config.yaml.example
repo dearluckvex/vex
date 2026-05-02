@@ -1,7 +1,7 @@
-# XTune 默认配置文件
+# Vex 默认配置文件
 # 启动后可通过订阅链接或手动添加节点
 #
-# 用法: xtune-cli config.yaml
+# 用法: vex-cli config.yaml
 
 listen_addr: "127.0.0.1"
 socks_port: 1080

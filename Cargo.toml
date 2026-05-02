@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/xtune-core",
-    "crates/xtune-gui",
-    "crates/xtune-cli",
+    "crates/vex-core",
+    "crates/vex-gui",
+    "crates/vex-cli",
 ]
 resolver = "2"
 
@@ -10,11 +10,11 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-authors = ["XTune Contributors"]
+authors = ["Vex Contributors"]
 
 [workspace.dependencies]
 # Internal crates
-xtune-core = { path = "crates/xtune-core" }
+vex-core = { path = "crates/vex-core" }
 
 # GPUI
 gpui = "0.2.2"

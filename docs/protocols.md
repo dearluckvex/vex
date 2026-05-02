@@ -1,4 +1,4 @@
-# XTune 协议支持文档
+# Vex 协议支持文档
 
 ## 支持的代理协议
 
@@ -178,7 +178,7 @@ hysteria2://password@host:port?sni=example.com#name
 
 ## shoes 服务端兼容性矩阵
 
-| 协议 | shoes 支持 | XTune 实现优先级 |
+| 协议 | shoes 支持 | Vex 实现优先级 |
 |------|-----------|----------------|
 | Shadowsocks | ✅ | P0 - 首批实现 |
 | VMess AEAD | ✅ | P0 - 首批实现 |

@@ -1,0 +1,43 @@
+# Vex 路由器配置模板
+# 适用于 AsusWRT-Merlin 路由器
+#
+# 编辑此文件后执行: /jffs/addons/vex/scripts/vex.sh restart
+
+listen_addr: "0.0.0.0"     # 路由器模式监听所有接口
+socks_port: 1080
+http_port: 1087
+
+# 活跃节点索引（0 = 第一个节点）
+active_node: 0
+
+# 订阅源（启动时自动拉取）
+# 取消注释并填入你的订阅链接：
+# subscriptions:
+#   - name: "我的订阅"
+#     url: "https://example.com/subscribe?token=xxx"
+#     format: "auto"
+subscriptions: []
+
+# 手动填写节点
+nodes: []
+
+# 路由规则（按顺序匹配）
+rules:
+  # 私有地址直连
+  - rule_type: "ip-cidr"
+    pattern: "10.0.0.0/8"
+    target: "direct"
+  - rule_type: "ip-cidr"
+    pattern: "172.16.0.0/12"
+    target: "direct"
+  - rule_type: "ip-cidr"
+    pattern: "192.168.0.0/16"
+    target: "direct"
+
+  # 中国大陆 IP 直连
+  - rule_type: "geoip"
+    pattern: "CN"
+    target: "direct"
+
+  # 其他流量走代理
+  # （默认行为，无需显式配置）
