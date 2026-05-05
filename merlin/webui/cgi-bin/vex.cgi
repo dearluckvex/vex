@@ -10,6 +10,9 @@ VEX_PID="$VEX_DIR/vex.pid"
 VEX_LOG="$VEX_DIR/vex.log"
 VEX_SH="$VEX_DIR/scripts/vex.sh"
 
+# JSON-safe string: replace backslash, double-quote, newline, tab
+json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr -d '\n\r'; }
+
 # Output JSON content type
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache"
@@ -45,11 +48,15 @@ case "$ACTION" in
         SOCKS_PORT=$(get_config_value socks_port)
         HTTP_PORT=$(get_config_value http_port)
         ACTIVE_NODE=$(get_config_value active_node)
-        # Count nodes
-        NODE_COUNT=$(grep -c "^  - name:" "$VEX_CONF" 2>/dev/null || echo 0)
-        printf '{"running":%s,"pid":"%s","socks_port":"%s","http_port":"%s","active_node":"%s","node_count":%s}' \
+        MODE=$(get_config_value mode)
+        VER=$(json_str "$("$VEX_DIR/vex-cli" --version 2>/dev/null | head -1 | tr -d '"' || echo "")")
+        # Count nodes: lines with "- name:" or "- server:" under nodes/subscriptions sections
+        NODE_COUNT=$(awk '/^nodes:/{in_n=1;next} in_n&&/^[a-zA-Z_]/{in_n=0} in_n&&/- (name|server):/{c++} END{print c+0}' "$VEX_CONF" 2>/dev/null || echo 0)
+        # Count subscriptions: entries under subscriptions: block
+        SUB_COUNT=$(awk '/^subscriptions:/{in_s=1;next} in_s&&/^[a-zA-Z_]/{in_s=0} in_s&&/- name:/{c++} END{print c+0}' "$VEX_CONF" 2>/dev/null || echo 0)
+        printf '{"running":%s,"pid":"%s","socks_port":"%s","http_port":"%s","active_node":"%s","node_count":%s,"sub_count":%s,"mode":"%s","version":"%s"}' \
             "$RUNNING" "$PID" "${SOCKS_PORT:-1080}" "${HTTP_PORT:-1087}" \
-            "${ACTIVE_NODE:-0}" "${NODE_COUNT:-0}"
+            "${ACTIVE_NODE:-0}" "${NODE_COUNT:-0}" "${SUB_COUNT:-0}" "${MODE:-tun}" "$VER"
         ;;
 
     start)
@@ -83,13 +90,18 @@ case "$ACTION" in
         ;;
 
     nodes)
-        # Return node list from config
+        # Return node list from config (nodes: section only)
         if [ ! -f "$VEX_CONF" ]; then
             echo '{"nodes":[]}'
         else
-            # Parse node names from YAML
-            NODES=$(grep "^  - name:" "$VEX_CONF" | sed 's/^  - name: *//' | tr -d '"' | \
-                    awk '{printf "%s\"%s\"", (NR>1?",":""), $0}')
+            NODES=$(awk '
+                /^nodes:/ { in_n=1; next }
+                in_n && /^[a-zA-Z_]/ { in_n=0 }
+                in_n && /- name:/ {
+                    sub(/.*name:[[:space:]]*/, ""); gsub(/"/, ""); name=$0
+                    printf "%s\"%s\"", (n++ > 0 ? "," : ""), name
+                }
+            ' "$VEX_CONF")
             ACTIVE=$(get_config_value active_node)
             printf '{"nodes":[%s],"active":%s}' "$NODES" "${ACTIVE:-0}"
         fi
@@ -98,18 +110,27 @@ case "$ACTION" in
     set_node)
         # Set active node index
         INDEX=$(echo "$POST_DATA" | grep -o '"index":[0-9]*' | grep -o '[0-9]*')
-        if [ -n "$INDEX" ] && [ -f "$VEX_CONF" ]; then
-            sed -i "s/^active_node:.*/active_node: $INDEX/" "$VEX_CONF"
-            echo '{"ok":true,"msg":"Active node updated"}'
-            # Restart if running
-            is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
-        else
+        if [ -z "$INDEX" ] || [ ! -f "$VEX_CONF" ]; then
             echo '{"ok":false,"msg":"Invalid index or config not found"}'
+        else
+            # Validate index is within range
+            NODE_COUNT=$(awk '/^nodes:/{in_n=1;next} in_n&&/^[a-zA-Z_]/{in_n=0} in_n&&/- (name|server):/{c++} END{print c+0}' "$VEX_CONF" 2>/dev/null || echo 0)
+            if [ "$NODE_COUNT" -gt 0 ] && [ "$INDEX" -ge "$NODE_COUNT" ]; then
+                printf '{"ok":false,"msg":"Index %s out of range (0-%s)"}' "$INDEX" "$((NODE_COUNT-1))"
+            elif grep -q '^active_node:' "$VEX_CONF"; then
+                sed -i "s/^active_node:.*/active_node: $INDEX/" "$VEX_CONF"
+                echo '{"ok":true,"msg":"Active node updated"}'
+                is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+            else
+                echo "active_node: $INDEX" >> "$VEX_CONF"
+                echo '{"ok":true,"msg":"Active node updated"}'
+                is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+            fi
         fi
         ;;
 
     log)
-        LINES=$(tail -100 "$VEX_LOG" 2>/dev/null | tr '"' "'" | tr '\n' '|')
+        LINES=$(tail -150 "$VEX_LOG" 2>/dev/null | sed 's/"/'"'"'/g' | tr '\n' '|')
         printf '{"log":"%s"}' "$LINES"
         ;;
 
@@ -129,7 +150,9 @@ case "$ACTION" in
             NEW_CONF=$(echo "$POST_DATA" | grep -o '"config":"[^"]*"' | cut -d'"' -f4)
             if [ -n "$NEW_CONF" ]; then
                 echo "$NEW_CONF" | base64 -d > "$VEX_CONF.tmp" 2>/dev/null
-                if [ $? -eq 0 ]; then
+                if [ $? -eq 0 ] && [ -s "$VEX_CONF.tmp" ]; then
+                    # Backup previous config
+                    cp "$VEX_CONF" "$VEX_CONF.bak" 2>/dev/null || true
                     mv "$VEX_CONF.tmp" "$VEX_CONF"
                     echo '{"ok":true,"msg":"Config saved"}'
                     is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
@@ -147,7 +170,181 @@ case "$ACTION" in
 
     version)
         VER=$("$VEX_DIR/vex-cli" --version 2>/dev/null || echo "unknown")
-        printf '{"version":"%s"}' "$VER"
+        printf '{"version":"%s"}' "$(json_str "$VER")"
+        ;;
+
+    subscriptions)
+        # List subscriptions from config YAML
+        if [ ! -f "$VEX_CONF" ]; then
+            echo '{"subs":[]}'
+        else
+            SUBS=$(awk '
+                BEGIN { in_s=0; name=""; url=""; fmt=""; n=0 }
+                /^subscriptions:/ { in_s=1; next }
+                in_s && /^[a-zA-Z_]/ { in_s=0 }
+                in_s && /- name:/ {
+                    if (name != "") {
+                        printf "%s{\"index\":%d,\"name\":\"%s\",\"url\":\"%s\",\"format\":\"%s\"}",
+                               (n>0?",":""), n, name, url, fmt
+                        n++
+                    }
+                    sub(/.*name:[[:space:]]*/, ""); gsub(/"/, ""); name=$0
+                    url=""; fmt="auto"
+                }
+                in_s && /url:/ && !/name:/ { sub(/.*url:[[:space:]]*/, ""); gsub(/"/, ""); url=$0 }
+                in_s && /format:/           { sub(/.*format:[[:space:]]*/, ""); gsub(/"/, ""); fmt=$0 }
+                END {
+                    if (name != "") {
+                        printf "%s{\"index\":%d,\"name\":\"%s\",\"url\":\"%s\",\"format\":\"%s\"}",
+                               (n>0?",":""), n, name, url, fmt
+                    }
+                }
+            ' "$VEX_CONF")
+            printf '{"subs":[%s]}' "$SUBS"
+        fi
+        ;;
+
+    add_sub)
+        # Add a subscription entry to config
+        NAME=$(echo "$POST_DATA" | sed 's/.*"name":"\([^"]*\)".*/\1/')
+        URL=$(echo "$POST_DATA"  | sed 's/.*"url":"\([^"]*\)".*/\1/')
+        FORMAT=$(echo "$POST_DATA" | sed 's/.*"format":"\([^"]*\)".*/\1/')
+        [ -z "$FORMAT" ] && FORMAT="auto"
+        if [ -z "$NAME" ] || [ -z "$URL" ]; then
+            echo '{"ok":false,"msg":"名称和 URL 不能为空"}'
+        elif [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"msg":"配置文件不存在"}'
+        else
+            tmp="$VEX_CONF.tmp.$$"
+            awk -v n="$NAME" -v u="$URL" -v f="$FORMAT" '
+                BEGIN { found=0; in_s=0 }
+                /^subscriptions:[[:space:]]*\[\]/ {
+                    print "subscriptions:"
+                    printf "  - name: \"%s\"\n    url: \"%s\"\n    format: \"%s\"\n", n, u, f
+                    found=1; next
+                }
+                /^subscriptions:/ { in_s=1; print; next }
+                in_s && /^[a-zA-Z_]/ {
+                    if (!found) {
+                        printf "  - name: \"%s\"\n    url: \"%s\"\n    format: \"%s\"\n", n, u, f
+                        found=1
+                    }
+                    in_s=0
+                }
+                { print }
+                END {
+                    if (!found) {
+                        print "\nsubscriptions:"
+                        printf "  - name: \"%s\"\n    url: \"%s\"\n    format: \"%s\"\n", n, u, f
+                    }
+                }
+            ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            echo '{"ok":true,"msg":"订阅已添加"}'
+        fi
+        ;;
+
+    del_sub)
+        # Delete subscription by index
+        IDX=$(echo "$POST_DATA" | grep -o '"index":[0-9]*' | grep -o '[0-9]*')
+        if [ -z "$IDX" ] || [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"msg":"参数错误"}'
+        else
+            tmp="$VEX_CONF.tmp.$$"
+            awk -v target="$IDX" '
+                BEGIN { in_s=0; entry=-1; skip=0 }
+                /^subscriptions:/ { in_s=1; print; next }
+                in_s && /^[a-zA-Z_]/ { in_s=0; skip=0 }
+                in_s && /- name:/ { entry++; skip=(entry == target+0) }
+                skip { next }
+                { print }
+            ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            echo '{"ok":true,"msg":"订阅已删除"}'
+        fi
+        ;;
+
+    update_subs)
+        # Trigger subscription update (restart so vex-cli fetches new subs)
+        "$VEX_SH" update-subs >> "$VEX_LOG" 2>&1 &
+        echo '{"ok":true,"msg":"订阅更新已启动，完成后节点列表自动刷新"}'
+        ;;
+
+    speedtest)
+        # Test latency through current active node via SOCKS5 proxy
+        if ! is_running; then
+            echo '{"ok":false,"latency":-1,"msg":"Vex 未运行，请先启动服务"}'
+        else
+            SOCKS_PORT=$(get_config_value socks_port)
+            RESULT=$(curl -s -o /dev/null -w '%{time_connect}|%{http_code}' \
+                --connect-timeout 10 --max-time 15 \
+                --socks5 "127.0.0.1:${SOCKS_PORT:-1080}" \
+                'http://www.gstatic.com/generate_204' 2>/dev/null)
+            CONN=$(echo "$RESULT" | cut -d'|' -f1)
+            CODE=$(echo "$RESULT" | cut -d'|' -f2)
+            if [ "$CODE" = "204" ] || [ "$CODE" = "200" ]; then
+                MS=$(echo "$CONN" | awk '{printf "%d", $1 * 1000}')
+                printf '{"ok":true,"latency":%s}' "$MS"
+            else
+                echo '{"ok":false,"latency":-1,"msg":"连接失败或超时"}'
+            fi
+        fi
+        ;;
+
+    stats)
+        # Return uptime, DNS active state, firewall active state
+        UPTIME_STR="stopped"
+        PID_VAL=0
+        if is_running; then
+            PID_VAL=$(cat "$VEX_PID")
+            if [ -f "/proc/$PID_VAL/stat" ]; then
+                STARTTIME=$(awk '{print $22}' "/proc/$PID_VAL/stat" 2>/dev/null || echo 0)
+                BTIME=$(grep '^btime' /proc/stat 2>/dev/null | awk '{print $2}' || echo 0)
+                NOW=$(date +%s 2>/dev/null || echo 0)
+                if [ "$BTIME" -gt 0 ] && [ "$NOW" -gt 0 ] && [ "$STARTTIME" -gt 0 ]; then
+                    START_SEC=$(( BTIME + STARTTIME / 100 ))
+                    ELAPSED=$(( NOW - START_SEC ))
+                    H=$(( ELAPSED / 3600 ))
+                    M=$(( (ELAPSED % 3600) / 60 ))
+                    S=$(( ELAPSED % 60 ))
+                    UPTIME_STR="${H}h ${M}m ${S}s"
+                else
+                    UPTIME_STR="running"
+                fi
+            fi
+        fi
+        DNS_ACTIVE=false
+        [ -f "/jffs/configs/dnsmasq.d/vex.conf" ] && DNS_ACTIVE=true
+        FW_ACTIVE=false
+        iptables -t nat -L VEX_PREROUTING -n 2>/dev/null | grep -q 'REDIRECT' && FW_ACTIVE=true
+        printf '{"ok":true,"uptime":"%s","pid":%s,"dns_active":%s,"fw_active":%s}' \
+            "$UPTIME_STR" "$PID_VAL" "$DNS_ACTIVE" "$FW_ACTIVE"
+        ;;
+
+    set_mode)
+        # Set proxy mode: tun | socks | system
+        MODE=$(echo "$POST_DATA" | sed 's/.*"mode":"\([^"]*\)".*/\1/')
+        case "$MODE" in
+            tun|socks|system)
+                if [ ! -f "$VEX_CONF" ]; then
+                    echo '{"ok":false,"msg":"配置文件不存在"}'
+                elif grep -q '^mode:' "$VEX_CONF"; then
+                    sed -i "s/^mode:.*/mode: \"$MODE\"/" "$VEX_CONF"
+                    echo '{"ok":true,"msg":"模式已设置，重启生效"}'
+                    is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+                else
+                    echo "mode: \"$MODE\"" >> "$VEX_CONF"
+                    echo '{"ok":true,"msg":"模式已设置，重启生效"}'
+                    is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+                fi
+                ;;
+            *)
+                echo '{"ok":false,"msg":"无效的代理模式"}'
+                ;;
+        esac
+        ;;
+
+    logs_clear)
+        > "$VEX_LOG" 2>/dev/null
+        echo '{"ok":true,"msg":"日志已清空"}'
         ;;
 
     *)

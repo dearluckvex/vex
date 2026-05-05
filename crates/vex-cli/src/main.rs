@@ -1,11 +1,13 @@
 use std::env;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use vex_core::{
     AppConfig, ProxyProtocol, ProxyService, Router, RoutingOutbound, RuleSet, SharedOutbound,
-    create_outbound, fetch_subscription, normalize_node_names,
+    TunProxy, create_outbound, fetch_subscription, normalize_node_names, resolve_to_ipv4,
+    setup_tun_routes, tun_supported, tun_requirements,
 };
 
 #[tokio::main]
@@ -25,6 +27,10 @@ async fn main() -> Result<()> {
         return init_config(path);
     }
 
+    // Feature flags
+    let enable_tun = args.iter().any(|a| a == "--tun");
+    let setup_routes = args.iter().any(|a| a == "--tun-routes");
+
     let config_path = parse_config_path()?;
     let config = load_config(&config_path)
         .await
@@ -34,7 +40,8 @@ async fn main() -> Result<()> {
     let outbound = build_outbound(&config, active_index)?;
     let selected = active_index.and_then(|index| config.nodes.get(index));
 
-    let mut service = ProxyService::with_outbound(outbound);
+    // Start HTTP/SOCKS5 proxy service
+    let mut service = ProxyService::with_outbound(outbound.clone());
     service
         .start(&config.listen_addr, config.socks_port, config.http_port)
         .await?;
@@ -56,10 +63,63 @@ async fn main() -> Result<()> {
         config.listen_addr,
         config.http_port
     );
-    tracing::info!("Press Ctrl+C to stop");
 
+    // Optionally start TUN proxy
+    let tun_proxy = if enable_tun {
+        if !tun_supported() {
+            tracing::warn!("TUN mode not supported on this system: {}", tun_requirements());
+            None
+        } else {
+            match TunProxy::start(outbound.clone()) {
+                Ok(tun) => {
+                    let route_info = tun.route_info();
+                    tracing::info!(
+                        "TUN device started: {} — TCP+UDP+ICMP proxy active",
+                        route_info.tun_name
+                    );
+
+                    if setup_routes {
+                        // Collect proxy server IPs to bypass routing loop
+                        let bypass_ips = collect_proxy_ips(&config, active_index).await;
+                        match setup_tun_routes(&route_info, &bypass_ips) {
+                            Ok(_guard) => {
+                                tracing::info!(
+                                    "System default route → TUN (desktop mode, {} IPs bypassed)",
+                                    bypass_ips.len()
+                                );
+                                // _guard is intentionally dropped at shutdown via emergency_restore_routes
+                            }
+                            Err(e) => tracing::warn!("Route setup failed: {}", e),
+                        }
+                    } else {
+                        tracing::info!(
+                            "TUN device: {} (router mode — use iptables/TPROXY to route traffic in)",
+                            route_info.tun_name
+                        );
+                        tracing::info!("  TUN IP: 198.18.0.1  Add: ip route add <LAN> dev {}",
+                            route_info.tun_name);
+                    }
+
+                    Some(tun)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to start TUN proxy: {}", e);
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    tracing::info!("Press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
     tracing::info!("Shutdown signal received");
+
+    // Stop TUN first, then proxy
+    if let Some(tun) = tun_proxy {
+        tun.stop().await;
+    }
     service.stop().await;
 
     // Clean up system proxy and TUN routes
@@ -70,8 +130,12 @@ async fn main() -> Result<()> {
 }
 
 fn parse_config_path() -> Result<String> {
-    match env::args().nth(1) {
-        Some(path) => Ok(path),
+    // Skip flag arguments (--tun, --tun-routes, etc.)
+    let path = env::args()
+        .skip(1)
+        .find(|a| !a.starts_with("--"));
+    match path {
+        Some(p) => Ok(p),
         None => {
             // Try default path
             let default_path = "config.yaml";
@@ -80,7 +144,11 @@ fn parse_config_path() -> Result<String> {
                 Ok(default_path.to_string())
             } else {
                 bail!(
-                    "usage: vex-cli <config.yaml>\n       vex-cli --init [path]  # generate default config"
+                    "usage: vex-cli <config.yaml> [--tun] [--tun-routes]\n\
+                     flags:\n\
+                     \x20 --tun           enable TUN proxy (TCP+UDP transparent proxy)\n\
+                     \x20 --tun-routes    also set system default route through TUN (desktop mode)\n\
+                     \x20 --init [path]   generate default config file"
                 )
             }
         }
@@ -166,6 +234,21 @@ fn build_outbound(config: &AppConfig, active_index: Option<usize>) -> Result<Sha
         router,
         base_outbound,
     ))))
+}
+
+/// Resolve proxy server hostnames to IPv4 addresses for TUN route bypass.
+async fn collect_proxy_ips(config: &AppConfig, active_index: Option<usize>) -> Vec<Ipv4Addr> {
+    let mut ips = Vec::new();
+    if let Some(idx) = active_index {
+        if let Some(node) = config.nodes.get(idx) {
+            let resolved = resolve_to_ipv4(&node.server);
+            if resolved.is_empty() {
+                tracing::warn!("Could not resolve proxy server: {}", node.server);
+            }
+            ips.extend(resolved);
+        }
+    }
+    ips
 }
 
 fn protocol_name(protocol: &ProxyProtocol) -> &'static str {
