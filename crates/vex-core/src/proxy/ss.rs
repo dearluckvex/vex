@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use shadowsocks::ProxyClientStream;
 use shadowsocks::config::{ServerAddr, ServerConfig, ServerType};
 use shadowsocks::context::Context;

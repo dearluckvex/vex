@@ -74,7 +74,7 @@ pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Resu
     };
 
     match proxy.set_system_proxy() {
-        Ok(()) => return Ok(()),
+        Ok(()) => Ok(()),
         Err(e) => {
             let msg = format!("{}", e);
             // On Windows the registry may hold a per-protocol value like
@@ -108,12 +108,12 @@ pub fn set_system_proxy_with_bypass(host: &str, port: u16, bypass: &str) -> Resu
                     e
                 ));
             }
-            return Err(anyhow::anyhow!(
+            Err(anyhow::anyhow!(
                 "failed to set system proxy ({}:{}) — {}",
                 host,
                 port,
                 e
-            ));
+            ))
         }
     }
 }

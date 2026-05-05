@@ -32,7 +32,15 @@ impl ProxyService {
             outbound: SharedOutbound::direct(),
         }
     }
+}
 
+impl Default for ProxyService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProxyService {
     /// Create with a specific outbound connector.
     pub fn with_outbound(outbound: SharedOutbound) -> Self {
         let (state_tx, state_rx) = watch::channel(ProxyState::Disconnected);

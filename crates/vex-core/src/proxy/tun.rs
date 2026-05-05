@@ -202,7 +202,7 @@ impl TunProxy {
         let mut tcp_config = TcpConfig::default();
         tcp_config.timeout = std::time::Duration::from_secs(300);
         tcp_config.options = Some(vec![TcpOptions::MaximumSegmentSize(
-            (TUN_MTU - 40) as u16, // IP header (20) + TCP header (20)
+            TUN_MTU - 40, // IP header (20) + TCP header (20)
         )]);
         tcp_config.max_unacked_bytes = 256 * 1024;
         ipstack_config.with_tcp_config(tcp_config);
@@ -337,15 +337,16 @@ async fn handle_tun_stream(
             }
         }
         IpStackStream::UnknownTransport(pkt) => {
-            if pkt.src_addr().is_ipv4() && pkt.ip_protocol() == IpNumber::ICMP {
-                if let Ok((icmp_header, req_payload)) = Icmpv4Header::from_slice(pkt.payload()) {
-                    if let etherparse::Icmpv4Type::EchoRequest(echo) = icmp_header.icmp_type {
-                        let mut resp = Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
-                        resp.update_checksum(req_payload);
-                        let mut payload = resp.to_bytes().to_vec();
-                        payload.extend_from_slice(req_payload);
-                        let _ = pkt.send(payload);
-                    }
+            if pkt.src_addr().is_ipv4()
+                && pkt.ip_protocol() == IpNumber::ICMP
+                && let Ok((icmp_header, req_payload)) = Icmpv4Header::from_slice(pkt.payload())
+            {
+                if let etherparse::Icmpv4Type::EchoRequest(echo) = icmp_header.icmp_type {
+                    let mut resp = Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
+                    resp.update_checksum(req_payload);
+                    let mut payload = resp.to_bytes().to_vec();
+                    payload.extend_from_slice(req_payload);
+                    let _ = pkt.send(payload);
                 }
             }
         }
@@ -1008,12 +1009,12 @@ fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: std::time::Duration) -> Re
 fn find_cmd(cmd: &str) -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = std::process::Command::new("which").arg(cmd).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Some(path);
-                }
+        if let Ok(output) = std::process::Command::new("which").arg(cmd).output()
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
             }
         }
         for dir in &["/usr/sbin", "/sbin", "/usr/bin", "/bin"] {
@@ -1184,7 +1185,7 @@ fn current_privilege_status() -> PrivilegeStatus {
         if unix_is_root() {
             return PrivilegeStatus::Privileged;
         }
-        return PrivilegeStatus::Missing;
+        PrivilegeStatus::Missing
     }
 
     #[cfg(target_os = "windows")]
@@ -1224,6 +1225,7 @@ fn windows_is_elevated() -> Option<bool> {
 
 // === WinTun DLL auto-install (Windows only) ===
 
+#[allow(dead_code)]
 const WINTUN_DLL: &str = "wintun.dll";
 
 // Embed the architecture-specific wintun.dll at compile time.
@@ -1250,6 +1252,7 @@ pub fn wintun_dll_available() -> bool {
 }
 
 /// Path where wintun.dll should be placed (next to the executable).
+#[allow(dead_code)]
 fn wintun_dll_path() -> Option<std::path::PathBuf> {
     std::env::current_exe()
         .ok()

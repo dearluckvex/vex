@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::config::model::TransportConfig;
 
-use super::connector::{BoxProxyStream, Outbound, ProxyStream};
+use super::connector::{BoxProxyStream, Outbound};
 use super::pool::ConnPool;
 use super::transport::{TlsConnFactory, resolve_transport_tls};
 
@@ -367,7 +367,7 @@ struct VMessStream {
 
 enum VMessChunkCipher {
     Aes128Gcm {
-        cipher: Aes128Gcm,
+        cipher: Box<Aes128Gcm>,
         iv: [u8; 16],
     },
     Chacha20Poly1305 {
@@ -383,7 +383,10 @@ impl VMessChunkCipher {
             VMessSecurity::Aes128Gcm | VMessSecurity::Auto => {
                 let cipher =
                     Aes128Gcm::new_from_slice(key).expect("AES-128-GCM key is exactly 16 bytes");
-                VMessChunkCipher::Aes128Gcm { cipher, iv: *iv }
+                VMessChunkCipher::Aes128Gcm {
+                    cipher: Box::new(cipher),
+                    iv: *iv,
+                }
             }
             VMessSecurity::Chacha20Poly1305 => {
                 use chacha20poly1305::KeyInit;
@@ -459,7 +462,7 @@ fn generate_chacha_key(key: &[u8; 16]) -> [u8; 32] {
     let h1 = hasher1.finalize();
 
     let mut hasher2 = Md5::new();
-    hasher2.update(&h1);
+    hasher2.update(h1);
     let h2 = hasher2.finalize();
 
     let mut key32 = [0u8; 32];
@@ -469,6 +472,7 @@ fn generate_chacha_key(key: &[u8; 16]) -> [u8; 32] {
 }
 
 impl VMessStream {
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         inner: BoxProxyStream,
         header: Vec<u8>,

@@ -2,21 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Proxy routing mode
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProxyMode {
     /// All traffic goes through the proxy node
+    #[default]
     Global,
     /// China-direct / overseas-proxy based on built-in rules
     Rule,
     /// All traffic connects directly (no proxy)
     Direct,
-}
-
-impl Default for ProxyMode {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 /// Decode a percent-encoded display name.

@@ -18,6 +18,7 @@ struct SingBoxConfig {
     outbounds: Vec<SingBoxOutbound>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SingBoxOutbound {
     #[serde(rename = "type")]
@@ -56,6 +57,7 @@ struct SingBoxOutbound {
     multiplex: Option<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SingBoxTls {
     #[serde(default)]

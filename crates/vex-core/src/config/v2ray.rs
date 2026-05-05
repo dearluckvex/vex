@@ -64,6 +64,7 @@ struct V2RayRealitySettings {
 }
 
 /// VMess share link JSON format
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct VMessShareLink {
     #[serde(default = "default_v")]
@@ -538,7 +539,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
             let transport = outbound
                 .stream_settings
                 .as_ref()
-                .and_then(|ss| build_v2ray_transport(ss));
+                .and_then(build_v2ray_transport);
 
             Ok(Some(Node {
                 name,
@@ -595,7 +596,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
             let transport = outbound
                 .stream_settings
                 .as_ref()
-                .and_then(|ss| build_v2ray_transport(ss));
+                .and_then(build_v2ray_transport);
 
             Ok(Some(Node {
                 name,
@@ -674,19 +675,19 @@ fn build_v2ray_transport(ss: &V2RayStreamSettings) -> Option<TransportConfig> {
         return None;
     }
 
-    if security == "reality" {
-        if let Some(ref rs) = ss.reality_settings {
-            return Some(TransportConfig {
-                transport_type: TransportType::Reality,
-                tls: None,
-                ws: None,
-                reality: Some(RealityConfig {
-                    public_key: rs.public_key.clone().unwrap_or_default(),
-                    short_id: rs.short_id.clone().unwrap_or_default(),
-                    sni: rs.server_name.clone(),
-                }),
-            });
-        }
+    if security == "reality"
+        && let Some(ref rs) = ss.reality_settings
+    {
+        return Some(TransportConfig {
+            transport_type: TransportType::Reality,
+            tls: None,
+            ws: None,
+            reality: Some(RealityConfig {
+                public_key: rs.public_key.clone().unwrap_or_default(),
+                short_id: rs.short_id.clone().unwrap_or_default(),
+                sni: rs.server_name.clone(),
+            }),
+        });
     }
 
     let tls = if security == "tls" {
