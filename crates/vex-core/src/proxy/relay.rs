@@ -131,14 +131,28 @@ where
 
         // Drive A → B (bytes accumulate directly into this.a_to_b on every write)
         let a_to_b = if !this.a_done || this.a_buf.pos < this.a_buf.cap {
-            transfer_one(cx, this.a, this.b, &mut this.a_buf, &mut this.a_done, &mut this.a_to_b)
+            transfer_one(
+                cx,
+                this.a,
+                this.b,
+                &mut this.a_buf,
+                &mut this.a_done,
+                &mut this.a_to_b,
+            )
         } else {
             Poll::Ready(Ok(()))
         };
 
         // Drive B → A (bytes accumulate directly into this.b_to_a on every write)
         let b_to_a = if !this.b_done || this.b_buf.pos < this.b_buf.cap {
-            transfer_one(cx, this.b, this.a, &mut this.b_buf, &mut this.b_done, &mut this.b_to_a)
+            transfer_one(
+                cx,
+                this.b,
+                this.a,
+                &mut this.b_buf,
+                &mut this.b_done,
+                &mut this.b_to_a,
+            )
         } else {
             Poll::Ready(Ok(()))
         };

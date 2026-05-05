@@ -272,7 +272,10 @@ pub fn resolve_transport_tls(
     let Some(t) = transport else {
         return (None, false);
     };
-    let use_tls = matches!(t.transport_type, TransportType::Tls | TransportType::Reality);
+    let use_tls = matches!(
+        t.transport_type,
+        TransportType::Tls | TransportType::Reality
+    );
     let tls = if t.transport_type == TransportType::Reality && t.tls.is_none() {
         if let Some(ref r) = t.reality {
             tracing::info!(
@@ -308,12 +311,7 @@ pub struct TlsConnFactory {
 
 impl TlsConnFactory {
     /// Create from an optional TLS config.  SNI falls back to `server` if not set.
-    pub fn new(
-        server: &str,
-        port: u16,
-        tls_config: Option<&TlsConfig>,
-        use_tls: bool,
-    ) -> Self {
+    pub fn new(server: &str, port: u16, tls_config: Option<&TlsConfig>, use_tls: bool) -> Self {
         let sni = tls_config
             .and_then(|c| c.sni.as_deref())
             .unwrap_or(server)

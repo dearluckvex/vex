@@ -173,7 +173,7 @@ pub fn parse_vmess_uri(uri: &str) -> Result<Node> {
         },
         transport,
         latency_ms: None,
-            tags: vec![],
+        tags: vec![],
         extra: HashMap::new(),
     })
 }
@@ -213,7 +213,7 @@ pub fn parse_vless_uri(uri: &str) -> Result<Node> {
         },
         transport,
         latency_ms: None,
-            tags: vec![],
+        tags: vec![],
         extra: HashMap::new(),
     })
 }
@@ -298,7 +298,7 @@ pub fn parse_ss_uri(uri: &str) -> Result<Node> {
         },
         transport: None,
         latency_ms: None,
-            tags: vec![],
+        tags: vec![],
         extra: HashMap::new(),
     })
 }
@@ -353,7 +353,7 @@ pub fn parse_tuic_uri(uri: &str) -> Result<Node> {
             reality: None,
         }),
         latency_ms: None,
-            tags: vec![],
+        tags: vec![],
         extra: HashMap::new(),
     })
 }
@@ -391,7 +391,7 @@ pub fn parse_trojan_uri(uri: &str) -> Result<Node> {
         },
         transport,
         latency_ms: None,
-            tags: vec![],
+        tags: vec![],
         extra: HashMap::new(),
     })
 }
@@ -447,7 +447,7 @@ pub fn parse_hysteria2_uri(uri: &str) -> Result<Node> {
         },
         transport: None,
         latency_ms: None,
-            tags: vec![],
+        tags: vec![],
         extra: HashMap::new(),
     })
 }
@@ -552,7 +552,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 },
                 transport,
                 latency_ms: None,
-            tags: vec![],
+                tags: vec![],
                 extra: HashMap::new(),
             }))
         }
@@ -608,7 +608,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 },
                 transport,
                 latency_ms: None,
-            tags: vec![],
+                tags: vec![],
                 extra: HashMap::new(),
             }))
         }
@@ -653,7 +653,7 @@ fn convert_v2ray_outbound(outbound: &V2RayOutbound) -> Result<Option<Node>> {
                 },
                 transport: None,
                 latency_ms: None,
-            tags: vec![],
+                tags: vec![],
                 extra: HashMap::new(),
             }))
         }
@@ -861,7 +861,11 @@ pub fn node_to_share_uri(node: &Node) -> String {
             Reality => "reality",
             Quic => "quic",
             _ => {
-                if tc.tls.is_some() { "tls" } else { "none" }
+                if tc.tls.is_some() {
+                    "tls"
+                } else {
+                    "none"
+                }
             }
         };
         qparams.push(format!("security={}", security));
@@ -889,12 +893,22 @@ pub fn node_to_share_uri(node: &Node) -> String {
     }
 
     match &node.protocol {
-        ProxyProtocol::Shadowsocks { cipher, password, .. } => {
+        ProxyProtocol::Shadowsocks {
+            cipher, password, ..
+        } => {
             let userinfo = format!("{}:{}", cipher, password);
             let encoded = general_purpose::STANDARD.encode(userinfo.as_bytes());
-            format!("ss://{}@{}:{}#{}", encoded, node.server, node.port, name_enc)
+            format!(
+                "ss://{}@{}:{}#{}",
+                encoded, node.server, node.port, name_enc
+            )
         }
-        ProxyProtocol::VMess { uuid, alter_id, cipher, .. } => {
+        ProxyProtocol::VMess {
+            uuid,
+            alter_id,
+            cipher,
+            ..
+        } => {
             let (net, tls_str, host_val, path_val) = if let Some(ref tc) = node.transport {
                 let n = match tc.transport_type {
                     TransportType::WebSocket => "ws",
@@ -902,13 +916,23 @@ pub fn node_to_share_uri(node: &Node) -> String {
                     _ => "tcp",
                 };
                 let t = if tc.tls.is_some() { "tls" } else { "" };
-                let h = tc.ws.as_ref().and_then(|w| w.host.clone()).unwrap_or_default();
-                let p = tc.ws.as_ref().and_then(|w| w.path.clone()).unwrap_or_default();
+                let h = tc
+                    .ws
+                    .as_ref()
+                    .and_then(|w| w.host.clone())
+                    .unwrap_or_default();
+                let p = tc
+                    .ws
+                    .as_ref()
+                    .and_then(|w| w.path.clone())
+                    .unwrap_or_default();
                 (n, t, h, p)
             } else {
                 ("tcp", "", String::new(), String::new())
             };
-            let sni = node.transport.as_ref()
+            let sni = node
+                .transport
+                .as_ref()
                 .and_then(|tc| tc.tls.as_ref())
                 .and_then(|t| t.sni.clone())
                 .unwrap_or_default();
@@ -934,41 +958,86 @@ pub fn node_to_share_uri(node: &Node) -> String {
             if let Some(f) = flow {
                 qparams.push(format!("flow={}", f));
             }
-            let qs = if qparams.is_empty() { String::new() } else { format!("?{}", qparams.join("&")) };
-            format!("vless://{}@{}:{}{}#{}", uuid, node.server, node.port, qs, name_enc)
+            let qs = if qparams.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", qparams.join("&"))
+            };
+            format!(
+                "vless://{}@{}:{}{}#{}",
+                uuid, node.server, node.port, qs, name_enc
+            )
         }
-        ProxyProtocol::Tuic { uuid, password, congestion_control, .. } => {
-            let sni = node.transport.as_ref()
+        ProxyProtocol::Tuic {
+            uuid,
+            password,
+            congestion_control,
+            ..
+        } => {
+            let sni = node
+                .transport
+                .as_ref()
                 .and_then(|tc| tc.tls.as_ref())
                 .and_then(|t| t.sni.clone())
                 .unwrap_or_default();
-            let skip = node.transport.as_ref()
+            let skip = node
+                .transport
+                .as_ref()
                 .and_then(|tc| tc.tls.as_ref())
                 .map(|t| t.skip_cert_verify)
                 .unwrap_or(false);
             let mut extra = format!("?congestion_control={}", congestion_control);
-            if !sni.is_empty() { extra.push_str(&format!("&sni={}", urlencoding::encode(&sni))); }
-            if skip { extra.push_str("&allowInsecure=1"); }
-            format!("tuic://{}:{}@{}:{}{}#{}", uuid, password, node.server, node.port, extra, name_enc)
+            if !sni.is_empty() {
+                extra.push_str(&format!("&sni={}", urlencoding::encode(&sni)));
+            }
+            if skip {
+                extra.push_str("&allowInsecure=1");
+            }
+            format!(
+                "tuic://{}:{}@{}:{}{}#{}",
+                uuid, password, node.server, node.port, extra, name_enc
+            )
         }
         ProxyProtocol::Trojan { password, .. } => {
-            let qs = if qparams.is_empty() { String::new() } else { format!("?{}", qparams.join("&")) };
-            format!("trojan://{}@{}:{}{}#{}", password, node.server, node.port, qs, name_enc)
+            let qs = if qparams.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", qparams.join("&"))
+            };
+            format!(
+                "trojan://{}@{}:{}{}#{}",
+                password, node.server, node.port, qs, name_enc
+            )
         }
         ProxyProtocol::Hysteria2 { password, .. } => {
-            let sni = node.transport.as_ref()
+            let sni = node
+                .transport
+                .as_ref()
                 .and_then(|tc| tc.tls.as_ref())
                 .and_then(|t| t.sni.clone())
                 .unwrap_or_default();
-            let skip = node.transport.as_ref()
+            let skip = node
+                .transport
+                .as_ref()
                 .and_then(|tc| tc.tls.as_ref())
                 .map(|t| t.skip_cert_verify)
                 .unwrap_or(false);
             let mut extra_params = Vec::new();
-            if !sni.is_empty() { extra_params.push(format!("sni={}", urlencoding::encode(&sni))); }
-            if skip { extra_params.push("allowInsecure=1".to_string()); }
-            let qs = if extra_params.is_empty() { String::new() } else { format!("?{}", extra_params.join("&")) };
-            format!("hy2://{}@{}:{}{}#{}", password, node.server, node.port, qs, name_enc)
+            if !sni.is_empty() {
+                extra_params.push(format!("sni={}", urlencoding::encode(&sni)));
+            }
+            if skip {
+                extra_params.push("allowInsecure=1".to_string());
+            }
+            let qs = if extra_params.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", extra_params.join("&"))
+            };
+            format!(
+                "hy2://{}@{}:{}{}#{}",
+                password, node.server, node.port, qs, name_enc
+            )
         }
     }
 }

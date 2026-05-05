@@ -135,9 +135,7 @@ impl Router {
         Self {
             rules,
             geoip: None,
-            cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(ROUTE_CACHE_CAP).unwrap(),
-            )),
+            cache: RwLock::new(LruCache::new(NonZeroUsize::new(ROUTE_CACHE_CAP).unwrap())),
         }
     }
 

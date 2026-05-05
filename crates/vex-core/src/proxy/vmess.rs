@@ -74,7 +74,12 @@ impl VMessOutbound {
         let parsed_uuid = uuid::Uuid::parse_str(uuid_str)?;
 
         let (tls_config, use_tls) = resolve_transport_tls(transport, server);
-        let factory = Arc::new(TlsConnFactory::new(server, port, tls_config.as_ref(), use_tls));
+        let factory = Arc::new(TlsConnFactory::new(
+            server,
+            port,
+            tls_config.as_ref(),
+            use_tls,
+        ));
         let pool = ConnPool::new(factory);
 
         Ok(Self {
@@ -376,8 +381,8 @@ impl VMessChunkCipher {
     fn new(security: VMessSecurity, key: &[u8; 16], iv: &[u8; 16]) -> Self {
         match security {
             VMessSecurity::Aes128Gcm | VMessSecurity::Auto => {
-                let cipher = Aes128Gcm::new_from_slice(key)
-                    .expect("AES-128-GCM key is exactly 16 bytes");
+                let cipher =
+                    Aes128Gcm::new_from_slice(key).expect("AES-128-GCM key is exactly 16 bytes");
                 VMessChunkCipher::Aes128Gcm { cipher, iv: *iv }
             }
             VMessSecurity::Chacha20Poly1305 => {

@@ -371,4 +371,3 @@ mod tests {
         assert_eq!(outbound.sni, "custom.sni.com");
     }
 }
-

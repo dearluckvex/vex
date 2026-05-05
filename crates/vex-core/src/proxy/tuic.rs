@@ -435,4 +435,3 @@ mod tests {
         assert_eq!(ADDR_TYPE_IPV6, 0x02);
     }
 }
-

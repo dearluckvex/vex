@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use vex_core::{
     AppConfig, ProxyProtocol, ProxyService, Router, RoutingOutbound, RuleSet, SharedOutbound,
     TunProxy, create_outbound, fetch_subscription, normalize_node_names, resolve_to_ipv4,
-    setup_tun_routes, tun_supported, tun_requirements,
+    setup_tun_routes, tun_requirements, tun_supported,
 };
 
 #[tokio::main]
@@ -67,7 +67,10 @@ async fn main() -> Result<()> {
     // Optionally start TUN proxy
     let tun_proxy = if enable_tun {
         if !tun_supported() {
-            tracing::warn!("TUN mode not supported on this system: {}", tun_requirements());
+            tracing::warn!(
+                "TUN mode not supported on this system: {}",
+                tun_requirements()
+            );
             None
         } else {
             match TunProxy::start(outbound.clone()) {
@@ -96,8 +99,10 @@ async fn main() -> Result<()> {
                             "TUN device: {} (router mode — use iptables/TPROXY to route traffic in)",
                             route_info.tun_name
                         );
-                        tracing::info!("  TUN IP: 198.18.0.1  Add: ip route add <LAN> dev {}",
-                            route_info.tun_name);
+                        tracing::info!(
+                            "  TUN IP: 198.18.0.1  Add: ip route add <LAN> dev {}",
+                            route_info.tun_name
+                        );
                     }
 
                     Some(tun)
@@ -131,9 +136,7 @@ async fn main() -> Result<()> {
 
 fn parse_config_path() -> Result<String> {
     // Skip flag arguments (--tun, --tun-routes, etc.)
-    let path = env::args()
-        .skip(1)
-        .find(|a| !a.starts_with("--"));
+    let path = env::args().skip(1).find(|a| !a.starts_with("--"));
     match path {
         Some(p) => Ok(p),
         None => {

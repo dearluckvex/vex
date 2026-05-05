@@ -126,9 +126,7 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
             tracing::debug!("http_latency_test warmup failed (non-fatal): {:#}", e);
         }
         Err(_) => {
-            tracing::debug!(
-                "http_latency_test warmup timed out (non-fatal)",
-            );
+            tracing::debug!("http_latency_test warmup timed out (non-fatal)",);
         }
     }
 
@@ -144,9 +142,7 @@ pub async fn http_latency_test(outbound: &SharedOutbound, timeout_secs: u64) -> 
             match tokio::time::timeout(timeout, outbound.connect("cp.cloudflare.com", 80)).await {
                 Ok(Ok(s)) => Ok(s),
                 _ => {
-                    tracing::debug!(
-                        "http_latency_test: cloudflare unreachable, trying dns.google"
-                    );
+                    tracing::debug!("http_latency_test: cloudflare unreachable, trying dns.google");
                     tokio::time::timeout(timeout, outbound.connect("dns.google", 80))
                         .await
                         .map_err(|_| anyhow::anyhow!("connection timed out"))?

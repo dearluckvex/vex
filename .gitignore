@@ -6,3 +6,6 @@ Cargo.lock
 *.dylib
 Cargo.lock
 config.yaml
+
+# Allow embedded wintun DLLs for Windows TUN support
+!crates/vex-core/resources/wintun/*.dll
