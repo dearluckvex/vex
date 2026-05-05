@@ -9,7 +9,6 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-openssl = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -46,3 +45,7 @@ etherparse = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+
+# musl cross-compilation: vendored OpenSSL so pkg-config is not needed
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }

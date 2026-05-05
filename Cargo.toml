@@ -31,9 +31,6 @@ serde_yaml = "0.9"
 # Networking
 reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
 
-# OpenSSL – vendored so musl cross-compilation works without system libs
-openssl = { version = "0.10", features = ["vendored"] }
-
 # Crypto & proxy
 shadowsocks = { version = "1", features = ["aead-cipher-2022"] }
 quinn = "0.11"

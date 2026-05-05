@@ -153,23 +153,24 @@ function setMode(mode) {
 
 /* ── Nodes ─────────────────────────────────────────────────────────── */
 function loadNodes() {
-    api('nodes', null, function(d) {
+    api('node_details', null, function(d) {
         var list = document.getElementById('node-list');
         list.innerHTML = '';
         if (!d.nodes || d.nodes.length === 0) {
             list.innerHTML = '<div style="color:#999;padding:6px 0;">暂无节点，请在"订阅管理"中添加订阅</div>';
             return;
         }
-        d.nodes.forEach(function(name, i) {
-            var isActive = (i === parseInt(d.active));
+        d.nodes.forEach(function(n) {
+            var isActive = (n.index === parseInt(d.active));
             var row = document.createElement('div');
             row.className = 'node-row';
             row.innerHTML =
-                '<span class="node-name" title="' + escHtml(name) + '">' + escHtml('[' + i + '] ' + name) + '</span>' +
+                '<span class="node-name" title="' + escHtml(n.name) + '">' + escHtml('[' + n.index + '] ' + n.name) + '</span>' +
                 (isActive ? '<span class="node-badge">当前</span>' : '') +
-                '<span class="lat" id="lat-' + i + '">—</span>' +
-                '<button class="btn btn-primary btn-sm" onclick="testNode(' + i + ')">测速</button>' +
-                '<button class="btn btn-primary btn-sm" onclick="switchNode(' + i + ')"' + (isActive ? ' disabled' : '') + '>切换</button>';
+                '<span style="font-size:10px;color:#bbb;flex-shrink:0;white-space:nowrap;">' + escHtml(n.server + ':' + n.port) + '</span>' +
+                '<span class="lat" id="lat-' + n.index + '">—</span>' +
+                '<button class="btn btn-primary btn-sm" onclick="testNode(' + n.index + ')">测速</button>' +
+                '<button class="btn btn-primary btn-sm" onclick="switchNode(' + n.index + ')"' + (isActive ? ' disabled' : '') + '>切换</button>';
             list.appendChild(row);
         });
     });
@@ -185,7 +186,7 @@ function switchNode(idx) {
 function testNode(idx) {
     var latEl = document.getElementById('lat-' + idx);
     if (latEl) latEl.textContent = '...';
-    api('speedtest', {index: idx}, function(r) {
+    api('speedtest_node', {index: idx}, function(r) {
         if (!latEl) return;
         if (r.ok && r.latency >= 0) {
             var ms = r.latency;
@@ -198,9 +199,26 @@ function testNode(idx) {
 }
 
 function testAllNodes() {
-    api('nodes', null, function(d) {
+    api('node_details', null, function(d) {
         if (!d.nodes) return;
-        d.nodes.forEach(function(_, i) { setTimeout(function() { testNode(i); }, i * 200); });
+        d.nodes.forEach(function(n, i) { setTimeout(function() { testNode(n.index); }, i * 300); });
+    });
+}
+
+/* ── IP Check ──────────────────────────────────────────────────────── */
+function checkIp() {
+    var el = document.getElementById('ip-result');
+    el.textContent = '检测中...';
+    api('ip_check', null, function(r) {
+        el.textContent = r.ok ? (r.ip + (r.country ? '  (' + r.country + ')' : '')) : (r.msg || '检测失败');
+        el.style.color = r.ok ? '#27ae60' : '#e74c3c';
+    });
+}
+
+function proxySpeedtest() {
+    showMsg('正在测试代理延迟...', 'info');
+    api('speedtest', null, function(r) {
+        showMsg(r.ok ? '代理延迟: ' + r.latency + ' ms' : (r.msg || '测试失败'), r.ok ? 'ok' : 'err');
     });
 }
 
@@ -374,6 +392,16 @@ window.onload = function() {
         <span id="pill-system" onclick="setMode('system')">系统代理</span>
       </div>
       <div style="font-size:11px;color:#aaa;margin-top:7px;">切换模式后服务将自动重启以生效</div>
+    </div>
+
+    <div class="card">
+      <h3>网络检测</h3>
+      <div class="row">
+        <button class="btn btn-primary btn-sm" onclick="checkIp()">外部 IP 检测</button>
+        <span id="ip-result" style="font-size:12px;color:#555;margin-left:4px;">—</span>
+        <span style="flex:1"></span>
+        <button class="btn btn-primary btn-sm" onclick="proxySpeedtest()">代理延迟</button>
+      </div>
     </div>
 
     <div class="card">

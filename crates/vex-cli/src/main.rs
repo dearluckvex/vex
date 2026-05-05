@@ -287,6 +287,7 @@ mod tests {
                 reality: None,
             }),
             latency_ms: None,
+            tags: vec![],
             extra: Default::default(),
         }
     }

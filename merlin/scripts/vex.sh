@@ -103,7 +103,14 @@ do_start() {
 
     rotate_log
     info "Starting Vex..."
-    "$VEX_BIN" "$VEX_CONF" --tun >> "$VEX_LOG" 2>&1 &
+
+    # Respect the mode setting: only pass --tun when mode is tun (default)
+    local mode
+    mode=$(get_config_value mode)
+    case "${mode:-tun}" in
+        tun)    "$VEX_BIN" "$VEX_CONF" --tun >> "$VEX_LOG" 2>&1 & ;;
+        *)      "$VEX_BIN" "$VEX_CONF"       >> "$VEX_LOG" 2>&1 & ;;
+    esac
     echo $! > "$VEX_PID"
     sleep 1
 

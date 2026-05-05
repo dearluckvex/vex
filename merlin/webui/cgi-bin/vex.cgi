@@ -347,6 +347,99 @@ case "$ACTION" in
         echo '{"ok":true,"msg":"日志已清空"}'
         ;;
 
+    ip_check)
+        # Check external IP through the active SOCKS proxy
+        if ! is_running; then
+            echo '{"ok":false,"ip":"","country":"","msg":"Vex 未运行，请先启动服务"}'
+        else
+            SOCKS_PORT=$(get_config_value socks_port)
+            RESP=$(curl -s --connect-timeout 8 --max-time 12 \
+                --socks5 "127.0.0.1:${SOCKS_PORT:-1080}" \
+                'http://ip-api.com/json?fields=query,country' 2>/dev/null || echo '{}')
+            IP=$(printf '%s' "$RESP" | grep -o '"query":"[^"]*"' | cut -d'"' -f4)
+            COUNTRY=$(printf '%s' "$RESP" | grep -o '"country":"[^"]*"' | cut -d'"' -f4)
+            if [ -n "$IP" ]; then
+                printf '{"ok":true,"ip":"%s","country":"%s"}' \
+                    "$(json_str "$IP")" "$(json_str "$COUNTRY")"
+            else
+                echo '{"ok":false,"ip":"","country":"","msg":"IP 检测失败，请确认代理正常运行"}'
+            fi
+        fi
+        ;;
+
+    speedtest_node)
+        # Per-node TCP latency test: direct connect to server:port (no proxy)
+        INDEX=$(printf '%s' "$POST_DATA" | grep -o '"index":[0-9]*' | grep -o '[0-9]*')
+        if [ -z "$INDEX" ] || [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"latency":-1,"msg":"参数错误"}'
+        else
+            SERVER=$(awk -v t="$INDEX" '
+                /^nodes:/ { in_n=1; entry=-1; next }
+                in_n && /^[a-zA-Z_]/ { in_n=0 }
+                in_n && /- name:/ { entry++ }
+                in_n && entry==t+0 && /server:/ { sub(/.*server:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }
+            ' "$VEX_CONF")
+            PORT=$(awk -v t="$INDEX" '
+                /^nodes:/ { in_n=1; entry=-1; next }
+                in_n && /^[a-zA-Z_]/ { in_n=0 }
+                in_n && /- name:/ { entry++ }
+                in_n && entry==t+0 && /^[[:space:]]*port:/ { sub(/.*port:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }
+            ' "$VEX_CONF")
+            if [ -z "$SERVER" ] || [ -z "$PORT" ]; then
+                printf '{"ok":false,"latency":-1,"msg":"未找到节点 %s"}' "$INDEX"
+            else
+                TIME=$(curl -s -o /dev/null -w '%{time_connect}' \
+                    --connect-timeout 8 --max-time 8 \
+                    "http://$(json_str "$SERVER"):$PORT/" 2>/dev/null || echo "")
+                if printf '%s' "$TIME" | grep -qE '^[0-9]+\.[0-9]+$' && [ "$TIME" != "0.000000" ]; then
+                    MS=$(printf '%s' "$TIME" | awk '{printf "%d", $1 * 1000}')
+                    [ "$MS" -eq 0 ] && MS=1
+                    printf '{"ok":true,"latency":%s,"server":"%s","port":%s}' \
+                        "$MS" "$(json_str "$SERVER")" "$PORT"
+                else
+                    printf '{"ok":false,"latency":-1,"msg":"连接 %s:%s 超时"}' \
+                        "$(json_str "$SERVER")" "$PORT"
+                fi
+            fi
+        fi
+        ;;
+
+    node_details)
+        # Return full node info: [{index, name, server, port}, ...]
+        if [ ! -f "$VEX_CONF" ]; then
+            echo '{"nodes":[],"active":0}'
+        else
+            DETAILS=$(awk '
+                BEGIN { in_n=0; entry=-1; name=""; server=""; port="" }
+                /^nodes:/ { in_n=1; next }
+                in_n && /^[a-zA-Z_]/ { in_n=0 }
+                in_n && /- name:/ {
+                    if (entry >= 0) {
+                        printf "%s{\"index\":%d,\"name\":\"%s\",\"server\":\"%s\",\"port\":%s}",
+                            (entry>0?",":""), entry, name, server, (port?port:0)
+                    }
+                    entry++
+                    sub(/.*name:[[:space:]]*/, ""); gsub(/"/, ""); name=$0
+                    server=""; port=""
+                }
+                in_n && entry>=0 && /[[:space:]]server:/ {
+                    sub(/.*server:[[:space:]]*/, ""); gsub(/"/, ""); server=$0
+                }
+                in_n && entry>=0 && /^[[:space:]]*port:/ {
+                    sub(/.*port:[[:space:]]*/, ""); gsub(/"/, ""); port=$0
+                }
+                END {
+                    if (entry >= 0) {
+                        printf "%s{\"index\":%d,\"name\":\"%s\",\"server\":\"%s\",\"port\":%s}",
+                            (entry>0?",":""), entry, name, server, (port?port:0)
+                    }
+                }
+            ' "$VEX_CONF")
+            ACTIVE=$(get_config_value active_node)
+            printf '{"nodes":[%s],"active":%s}' "$DETAILS" "${ACTIVE:-0}"
+        fi
+        ;;
+
     *)
         echo '{"error":"Unknown action"}'
         ;;
