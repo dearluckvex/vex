@@ -170,14 +170,29 @@ jobs:
         run: cargo install cross --locked
 
       - name: Cross-compile CLI for ${{ matrix.arch }}
-        run: cross build --package vex-cli --target ${{ matrix.target }}
+        run: cross build --release --package vex-cli --target ${{ matrix.target }}
 
-      - name: Upload Merlin CLI artifact
+      - name: Package Merlin plugin
+        run: |
+          PKG="vex-merlin-${{ matrix.arch }}"
+          mkdir -p "$PKG/bin"
+          # Binary
+          cp target/${{ matrix.target }}/release/vex-cli "$PKG/bin/vex-cli-${{ matrix.arch }}"
+          chmod +x "$PKG/bin/vex-cli-${{ matrix.arch }}"
+          # Plugin files
+          cp merlin/install.sh merlin/uninstall.sh merlin/config.yaml.template "$PKG/"
+          cp -r merlin/scripts merlin/webui "$PKG/"
+          chmod +x "$PKG/install.sh" "$PKG/uninstall.sh" \
+                   "$PKG/scripts/vex.sh" "$PKG/scripts/iptables.sh" \
+                   "$PKG/webui/cgi-bin/vex.cgi"
+          tar -czf "${PKG}.tar.gz" "$PKG"
+
+      - name: Upload Merlin plugin artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vex-cli_merlin_${{ matrix.arch }}
-          path: target/${{ matrix.target }}/debug/vex-cli
-          retention-days: 7
+          name: vex-merlin-${{ matrix.arch }}
+          path: vex-merlin-${{ matrix.arch }}.tar.gz
+          retention-days: 14
 
   fmt:
     name: Rustfmt
