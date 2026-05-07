@@ -166,11 +166,13 @@ function loadNodes() {
             row.className = 'node-row';
             row.innerHTML =
                 '<span class="node-name" title="' + escHtml(n.name) + '">' + escHtml('[' + n.index + '] ' + n.name) + '</span>' +
+                (n.protocol ? '<span style="font-size:10px;color:#fff;background:#7f8c8d;border-radius:3px;padding:1px 5px;flex-shrink:0;">' + escHtml(n.protocol) + '</span>' : '') +
                 (isActive ? '<span class="node-badge">当前</span>' : '') +
                 '<span style="font-size:10px;color:#bbb;flex-shrink:0;white-space:nowrap;">' + escHtml(n.server + ':' + n.port) + '</span>' +
                 '<span class="lat" id="lat-' + n.index + '">—</span>' +
                 '<button class="btn btn-primary btn-sm" onclick="testNode(' + n.index + ')">测速</button>' +
-                '<button class="btn btn-primary btn-sm" onclick="switchNode(' + n.index + ')"' + (isActive ? ' disabled' : '') + '>切换</button>';
+                '<button class="btn btn-primary btn-sm" onclick="switchNode(' + n.index + ')"' + (isActive ? ' disabled' : '') + '>切换</button>' +
+                '<button class="btn btn-danger btn-sm" onclick="delNode(' + n.index + ')">删除</button>';
             list.appendChild(row);
         });
     });
@@ -205,6 +207,35 @@ function testAllNodes() {
     });
 }
 
+function delNode(idx) {
+    if (!confirm('确认删除该节点？')) return;
+    api('del_node', {index: idx}, function(r) {
+        showMsg(r.msg || (r.ok ? '节点已删除' : '删除失败'), r.ok ? 'ok' : 'err');
+        if (r.ok) { loadNodes(); refreshStatus(); }
+    });
+}
+
+function addNode() {
+    var name   = document.getElementById('an-name').value.trim();
+    var proto  = document.getElementById('an-proto').value;
+    var server = document.getElementById('an-server').value.trim();
+    var port   = parseInt(document.getElementById('an-port').value, 10);
+    var pass   = document.getElementById('an-pass').value.trim();
+    if (!name)            { showMsg('请填写节点名称', 'err'); return; }
+    if (!server)          { showMsg('请填写服务器地址', 'err'); return; }
+    if (!port || port<1)  { showMsg('请填写有效端口', 'err'); return; }
+    api('add_node', {name:name, protocol:proto, server:server, port:port, password:pass}, function(r) {
+        showMsg(r.msg || (r.ok ? '节点已添加' : '添加失败'), r.ok ? 'ok' : 'err');
+        if (r.ok) {
+            document.getElementById('an-name').value = '';
+            document.getElementById('an-server').value = '';
+            document.getElementById('an-port').value = '';
+            document.getElementById('an-pass').value = '';
+            loadNodes(); refreshStatus();
+        }
+    });
+}
+
 /* ── IP Check ──────────────────────────────────────────────────────── */
 function checkIp() {
     var el = document.getElementById('ip-result');
@@ -219,6 +250,17 @@ function proxySpeedtest() {
     showMsg('正在测试代理延迟...', 'info');
     api('speedtest', null, function(r) {
         showMsg(r.ok ? '代理延迟: ' + r.latency + ' ms' : (r.msg || '测试失败'), r.ok ? 'ok' : 'err');
+    });
+}
+
+/* ── System info ───────────────────────────────────────────────── */
+function loadSysinfo() {
+    api('sysinfo', null, function(d) {
+        if (!d.ok) return;
+        document.getElementById('si-mem').textContent = d.mem_pct + '% (' + Math.round(d.mem_used_kb/1024) + '/' + Math.round(d.mem_total_kb/1024) + ' MB)';
+        document.getElementById('si-load').textContent = d.load;
+        document.getElementById('si-uptime').textContent = d.uptime;
+        document.getElementById('si-wan').textContent = d.wan_ip || '—';
     });
 }
 
@@ -339,7 +381,9 @@ function escHtml(s) {
 window.onload = function() {
     refreshStatus();
     loadNodes();
+    loadSysinfo();
     setInterval(refreshStatus, 6000);
+    setInterval(loadSysinfo, 30000);
     showTab('tab-overview');
 };
 </script>
@@ -395,6 +439,16 @@ window.onload = function() {
     </div>
 
     <div class="card">
+      <h3>系统信息</h3>
+      <div class="info-grid" style="grid-template-columns: repeat(4,1fr);">
+        <div class="info-item"><div class="label">内存占用</div><div class="value" id="si-mem" style="font-size:12px;">—</div></div>
+        <div class="info-item"><div class="label">CPU 负载</div><div class="value" id="si-load" style="font-size:16px;">—</div></div>
+        <div class="info-item"><div class="label">路由器运行</div><div class="value" id="si-uptime" style="font-size:12px;">—</div></div>
+        <div class="info-item"><div class="label">WAN IP</div><div class="value" id="si-wan" style="font-size:11px;">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>网络检测</h3>
       <div class="row">
         <button class="btn btn-primary btn-sm" onclick="checkIp()">外部 IP 检测</button>
@@ -412,6 +466,30 @@ window.onload = function() {
         <button class="btn btn-primary btn-sm" onclick="loadNodes()">刷新列表</button>
         <button class="btn btn-primary btn-sm" onclick="testAllNodes()">全部测速</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>手动添加节点</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:8px;margin-bottom:8px;">
+        <div><div class="form-label">节点名称</div><input type="text" id="an-name" placeholder="我的节点"></div>
+        <div><div class="form-label">服务器地址</div><input type="text" id="an-server" placeholder="example.com"></div>
+        <div><div class="form-label">端口</div><input type="text" id="an-port" placeholder="443"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:160px 1fr auto;gap:8px;align-items:end;">
+        <div>
+          <div class="form-label">协议</div>
+          <select id="an-proto">
+            <option value="shadowsocks">Shadowsocks</option>
+            <option value="vmess">VMess</option>
+            <option value="trojan">Trojan</option>
+            <option value="vless">VLESS</option>
+            <option value="hysteria2">Hysteria2</option>
+          </select>
+        </div>
+        <div><div class="form-label">密码 / UUID</div><input type="text" id="an-pass" placeholder="password or UUID"></div>
+        <div><button class="btn btn-success" onclick="addNode()">添加节点</button></div>
+      </div>
+      <div style="font-size:11px;color:#aaa;margin-top:7px;">提示：高级选项（加密方式、TLS 等）请在"配置"标签页中直接编辑 YAML</div>
     </div>
   </div>
 

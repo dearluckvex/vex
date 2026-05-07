@@ -405,22 +405,25 @@ case "$ACTION" in
         ;;
 
     node_details)
-        # Return full node info: [{index, name, server, port}, ...]
+        # Return full node info: [{index, name, protocol, server, port}, ...]
         if [ ! -f "$VEX_CONF" ]; then
             echo '{"nodes":[],"active":0}'
         else
             DETAILS=$(awk '
-                BEGIN { in_n=0; entry=-1; name=""; server=""; port="" }
+                BEGIN { in_n=0; entry=-1; name=""; protocol=""; server=""; port="" }
                 /^nodes:/ { in_n=1; next }
                 in_n && /^[a-zA-Z_]/ { in_n=0 }
                 in_n && /- name:/ {
                     if (entry >= 0) {
-                        printf "%s{\"index\":%d,\"name\":\"%s\",\"server\":\"%s\",\"port\":%s}",
-                            (entry>0?",":""), entry, name, server, (port?port:0)
+                        printf "%s{\"index\":%d,\"name\":\"%s\",\"protocol\":\"%s\",\"server\":\"%s\",\"port\":%s}",
+                            (entry>0?",":""), entry, name, protocol, server, (port?port:0)
                     }
                     entry++
                     sub(/.*name:[[:space:]]*/, ""); gsub(/"/, ""); name=$0
-                    server=""; port=""
+                    protocol=""; server=""; port=""
+                }
+                in_n && entry>=0 && /[[:space:]]protocol:/ {
+                    sub(/.*protocol:[[:space:]]*/, ""); gsub(/"/, ""); protocol=$0
                 }
                 in_n && entry>=0 && /[[:space:]]server:/ {
                     sub(/.*server:[[:space:]]*/, ""); gsub(/"/, ""); server=$0
@@ -430,14 +433,108 @@ case "$ACTION" in
                 }
                 END {
                     if (entry >= 0) {
-                        printf "%s{\"index\":%d,\"name\":\"%s\",\"server\":\"%s\",\"port\":%s}",
-                            (entry>0?",":""), entry, name, server, (port?port:0)
+                        printf "%s{\"index\":%d,\"name\":\"%s\",\"protocol\":\"%s\",\"server\":\"%s\",\"port\":%s}",
+                            (entry>0?",":""), entry, name, protocol, server, (port?port:0)
                     }
                 }
             ' "$VEX_CONF")
             ACTIVE=$(get_config_value active_node)
             printf '{"nodes":[%s],"active":%s}' "$DETAILS" "${ACTIVE:-0}"
         fi
+        ;;
+
+    add_node)
+        # Add a manual node entry to config
+        NAME=$(echo "$POST_DATA" | sed 's/.*"name":"\([^"]*\)".*/\1/')
+        PROTO=$(echo "$POST_DATA" | sed 's/.*"protocol":"\([^"]*\)".*/\1/')
+        SERVER=$(echo "$POST_DATA" | sed 's/.*"server":"\([^"]*\)".*/\1/')
+        PORT=$(echo "$POST_DATA" | grep -o '"port":[0-9]*' | grep -o '[0-9]*')
+        PASS=$(echo "$POST_DATA" | sed 's/.*"password":"\([^"]*\)".*/\1/')
+        if [ -z "$NAME" ] || [ -z "$SERVER" ] || [ -z "$PORT" ]; then
+            echo '{"ok":false,"msg":"名称、服务器地址、端口不能为空"}'
+        else
+            case "$PROTO" in
+                shadowsocks|ss|vmess|trojan|vless|hysteria2|hy2) ;;
+                *) PROTO="shadowsocks" ;;
+            esac
+            tmp="$VEX_CONF.tmp.$$"
+            awk -v n="$NAME" -v p="$PROTO" -v s="$SERVER" -v port="$PORT" -v pw="$PASS" '
+                BEGIN { in_n=0; done=0; buf="" }
+                /^nodes:[[:space:]]*\[\]/ {
+                    print "nodes:"
+                    printf "  - name: \"%s\"\n    protocol: %s\n    server: \"%s\"\n    port: %s\n    password: \"%s\"\n", n, p, s, port, pw
+                    done=1; next
+                }
+                /^nodes:/ { in_n=1; print; next }
+                in_n && /^[a-zA-Z_]/ {
+                    if (!done) {
+                        printf "  - name: \"%s\"\n    protocol: %s\n    server: \"%s\"\n    port: %s\n    password: \"%s\"\n", n, p, s, port, pw
+                        done=1
+                    }
+                    in_n=0
+                }
+                { print }
+                END {
+                    if (!done) {
+                        print "\nnodes:"
+                        printf "  - name: \"%s\"\n    protocol: %s\n    server: \"%s\"\n    port: %s\n    password: \"%s\"\n", n, p, s, port, pw
+                    }
+                }
+            ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            printf '{"ok":true,"msg":"节点已添加: %s"}' "$(json_str "$NAME")"
+        fi
+        ;;
+
+    del_node)
+        # Delete a manual node by index
+        IDX=$(echo "$POST_DATA" | grep -o '"index":[0-9]*' | grep -o '[0-9]*')
+        if [ -z "$IDX" ] || [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"msg":"参数错误"}'
+        else
+            tmp="$VEX_CONF.tmp.$$"
+            # Each node block starts with "  - name:" and ends before next "  - name:" or a top-level key
+            awk -v target="$IDX" '
+                BEGIN { in_n=0; entry=-1; buf=""; skip=0 }
+                /^nodes:/ { in_n=1; print; next }
+                in_n && /^[a-zA-Z_]/ {
+                    if (buf != "" && !skip) printf "%s", buf
+                    buf=""; skip=0; in_n=0; print; next
+                }
+                in_n && /^  - / {
+                    if (buf != "" && !skip) printf "%s", buf
+                    entry++
+                    skip=(entry == target+0)
+                    buf=$0"\n"; next
+                }
+                in_n && skip  { next }
+                in_n          { buf=buf $0"\n"; next }
+                { print }
+                END { if (buf != "" && !skip) printf "%s", buf }
+            ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            # Clamp active_node if it now exceeds node count
+            NODE_COUNT=$(awk '/^nodes:/{in_n=1;next} in_n&&/^[a-zA-Z_]/{in_n=0} in_n&&/- name:/{c++} END{print c+0}' "$VEX_CONF" 2>/dev/null || echo 0)
+            ACTIVE=$(get_config_value active_node)
+            if [ -n "$ACTIVE" ] && [ "$NODE_COUNT" -gt 0 ] && [ "$ACTIVE" -ge "$NODE_COUNT" ]; then
+                sed -i "s/^active_node:.*/active_node: $((NODE_COUNT-1))/" "$VEX_CONF"
+            fi
+            echo '{"ok":true,"msg":"节点已删除"}'
+        fi
+        ;;
+
+    sysinfo)
+        # Router system information
+        MEM_TOTAL=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+        MEM_AVAIL=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+        MEM_USED=$((MEM_TOTAL - MEM_AVAIL))
+        MEM_PCT=0
+        [ "$MEM_TOTAL" -gt 0 ] && MEM_PCT=$((MEM_USED * 100 / MEM_TOTAL))
+        LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0.00")
+        UPTIME_S=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
+        UP_H=$((UPTIME_S / 3600))
+        UP_M=$(( (UPTIME_S % 3600) / 60 ))
+        WAN_IP=$(nvram get wan0_ipaddr 2>/dev/null || echo "")
+        printf '{"ok":true,"mem_total_kb":%s,"mem_used_kb":%s,"mem_pct":%s,"load":"%s","uptime":"%dh %dm","wan_ip":"%s"}' \
+            "$MEM_TOTAL" "$MEM_USED" "$MEM_PCT" "$LOAD" "$UP_H" "$UP_M" "$(json_str "$WAN_IP")"
         ;;
 
     *)
