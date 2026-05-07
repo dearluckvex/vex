@@ -17,7 +17,7 @@ WWW_VEX="/www/ext/vex"
 CGI_BIN="/www/cgi-bin"
 
 # GitHub release config — set VEX_GITHUB_REPO env var or edit below
-GITHUB_REPO="${VEX_GITHUB_REPO:-YOUR_USERNAME/vex}"
+GITHUB_REPO="${VEX_GITHUB_REPO:-dearluckvex/vex}"
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { printf "${CYAN}[Vex] %s${NC}\n" "$*"; }
