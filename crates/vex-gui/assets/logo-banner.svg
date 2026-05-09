@@ -1,0 +1,41 @@
+设计成<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 128" width="480" height="128">
+  <!-- Background -->
+  <rect width="480" height="128" rx="16" fill="#1c1c1c"/>
+
+  <!-- Fox icon (left side, scaled down) -->
+  <g transform="translate(8, 4) scale(0.46)">
+    <circle cx="128" cy="128" r="120" fill="#242424"/>
+    <polygon points="72,18 108,74 128,64 148,74 184,18 202,88 212,132 196,190 156,224 128,232 100,224 60,190 44,132 54,88" fill="#E8882A"/>
+    <polygon points="72,22 104,72 60,82" fill="#D4607A"/>
+    <polygon points="184,22 196,82 152,72" fill="#D4607A"/>
+    <ellipse cx="128" cy="163" rx="60" ry="62" fill="#F5D4A0"/>
+    <circle cx="98"  cy="134" r="14" fill="#1C0C04"/>
+    <circle cx="93"  cy="129" r="5"  fill="white" opacity="0.85"/>
+    <circle cx="158" cy="134" r="14" fill="#1C0C04"/>
+    <circle cx="153" cy="129" r="5"  fill="white" opacity="0.85"/>
+    <ellipse cx="128" cy="184" rx="10" ry="7" fill="#1C0C04"/>
+    <path d="M 118 190 Q 128 198 138 190" stroke="#1C0C04" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  </g>
+
+  <!-- "Vex" wordmark -->
+  <text
+    x="82"
+    y="82"
+    font-family="'SF Pro Display', 'Segoe UI', 'Inter', sans-serif"
+    font-size="68"
+    font-weight="700"
+    letter-spacing="-2"
+    fill="#ffffff"
+  >Vex</text>
+
+  <!-- Tagline -->
+  <text
+    x="84"
+    y="106"
+    font-family="'SF Pro Text', 'Segoe UI', 'Inter', sans-serif"
+    font-size="18"
+    font-weight="400"
+    fill="#7d868f"
+    letter-spacing="1"
+  >Proxy Client</text>
+</svg>

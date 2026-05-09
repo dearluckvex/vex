@@ -400,7 +400,13 @@ impl AppState {
             return;
         }
 
-        if !self.nodes.is_empty() && self.selected_node.is_none() {
+        if self.nodes.is_empty() {
+            self.proxy_status = "No nodes available. Please add a node first.".to_string();
+            cx.notify();
+            return;
+        }
+
+        if self.selected_node.is_none() {
             self.proxy_status = "Please select a node first".to_string();
             cx.notify();
             return;
