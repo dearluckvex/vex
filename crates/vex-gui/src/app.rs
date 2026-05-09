@@ -1530,8 +1530,7 @@ impl AppState {
                                 .map(|n| n.name.clone());
 
                             // Remove stale nodes from this subscription
-                            this.nodes
-                                .retain(|n| n.extra.get("sub_url").map_or(true, |u| u != &url));
+                            this.nodes.retain(|n| n.extra.get("sub_url") != Some(&url));
 
                             let count = new_nodes.len();
                             this.nodes.extend(new_nodes);
@@ -3370,19 +3369,18 @@ impl AppState {
         let url = self.subscriptions[index].url.clone();
         self.subscriptions.remove(index);
         // Remove nodes tagged with this subscription URL
-        self.nodes
-            .retain(|n| n.extra.get("sub_url").map_or(true, |u| u != &url));
+        self.nodes.retain(|n| n.extra.get("sub_url") != Some(&url));
         // Restore indices after removal
         let len = self.nodes.len();
-        if let Some(i) = self.selected_node {
-            if i >= len {
-                self.selected_node = if len > 0 { Some(len - 1) } else { None };
-            }
+        if let Some(i) = self.selected_node
+            && i >= len
+        {
+            self.selected_node = if len > 0 { Some(len - 1) } else { None };
         }
-        if let Some(i) = self.active_proxy_node {
-            if i >= len {
-                self.active_proxy_node = None;
-            }
+        if let Some(i) = self.active_proxy_node
+            && i >= len
+        {
+            self.active_proxy_node = None;
         }
         self.persist_gui_state();
         cx.notify();
@@ -3461,7 +3459,7 @@ impl AppState {
             let node_count = self
                 .nodes
                 .iter()
-                .filter(|n| n.extra.get("sub_url").map_or(false, |u| u == &sub.url))
+                .filter(|n| n.extra.get("sub_url") == Some(&sub.url))
                 .count();
             let is_refreshing = self.refreshing_subscriptions.contains(&i);
 
@@ -5338,10 +5336,10 @@ impl AppState {
                                                 if tag.is_empty() {
                                                     return;
                                                 }
-                                                if let Some(n) = this.nodes.get_mut(index) {
-                                                    if !n.tags.contains(&tag) {
-                                                        n.tags.push(tag);
-                                                    }
+                                                if let Some(n) = this.nodes.get_mut(index)
+                                                    && !n.tags.contains(&tag)
+                                                {
+                                                    n.tags.push(tag);
                                                 }
                                                 this.node_tag_input.update(cx, |s, cx| {
                                                     s.set_value("", window, cx);
@@ -5623,7 +5621,7 @@ async fn verify_local_http_proxy_once(
     }
     // Accept "200" anywhere after the HTTP version — some proxies omit
     // the trailing space (e.g. "HTTP/1.1 200" without a reason phrase).
-    let code = status_line.splitn(3, ' ').nth(1).unwrap_or_default().trim();
+    let code = status_line.split(' ').nth(1).unwrap_or_default().trim();
     if code != "200" {
         anyhow::bail!("tunnel establishment failed: {}", status_line);
     }
@@ -5706,22 +5704,21 @@ fn transport_summary(transport: Option<&TransportConfig>) -> String {
             };
 
             let mut parts = vec![mode.to_string()];
-            if let Some(tls) = &transport.tls {
-                if let Some(sni) = &tls.sni {
-                    parts.push(format!("SNI {sni}"));
-                }
+            if let Some(tls) = &transport.tls
+                && let Some(sni) = &tls.sni
+            {
+                parts.push(format!("SNI {sni}"));
             }
-            if let Some(ws) = &transport.ws {
-                if let Some(path) = &ws.path {
-                    if !path.is_empty() {
-                        parts.push(format!("Path {}", path));
-                    }
-                }
+            if let Some(ws) = &transport.ws
+                && let Some(path) = &ws.path
+                && !path.is_empty()
+            {
+                parts.push(format!("Path {}", path));
             }
-            if let Some(reality) = &transport.reality {
-                if let Some(sni) = &reality.sni {
-                    parts.push(format!("Server {}", sni));
-                }
+            if let Some(reality) = &transport.reality
+                && let Some(sni) = &reality.sni
+            {
+                parts.push(format!("Server {}", sni));
             }
             parts.join(" · ")
         }
