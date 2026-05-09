@@ -10,6 +10,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
 </p>
 
+<p align="right"><a href="README.zh-CN.md">中文</a> | English</p>
+
 A cross-platform proxy client written in Rust, supporting multiple protocols, subscription management, TUN mode, and flexible routing rules.
 
 ---
