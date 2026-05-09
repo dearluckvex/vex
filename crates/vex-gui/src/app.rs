@@ -1970,11 +1970,7 @@ impl AppState {
                     .h(px(40.0))
                     .border_b_1()
                     .border_color(rgb(BORDER_COLOR))
-                    .child(
-                        img("logo-icon.svg")
-                            .w(px(24.0))
-                            .h(px(24.0)),
-                    )
+                    .child(img("logo-icon.svg").w(px(24.0)).h(px(24.0)))
                     .child(
                         div()
                             .text_sm()

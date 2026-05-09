@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- No background circle — transparent, for in-app use -->
+
+  <!-- Fox head silhouette (orange) including ears -->
+  <polygon
+    points="72,18 108,74 128,64 148,74 184,18 202,88 212,132 196,190 156,224 128,232 100,224 60,190 44,132 54,88"
+    fill="#E8882A"
+  />
+
+  <!-- Inner left ear -->
+  <polygon points="72,22 104,72 60,82" fill="#D4607A"/>
+
+  <!-- Inner right ear -->
+  <polygon points="184,22 196,82 152,72" fill="#D4607A"/>
+
+  <!-- Inner face (lighter cream/fur area) -->
+  <ellipse cx="128" cy="163" rx="60" ry="62" fill="#F5D4A0"/>
+
+  <!-- Left eye -->
+  <circle cx="98"  cy="134" r="14" fill="#1C0C04"/>
+  <circle cx="93"  cy="129" r="5"  fill="white" opacity="0.85"/>
+
+  <!-- Right eye -->
+  <circle cx="158" cy="134" r="14" fill="#1C0C04"/>
+  <circle cx="153" cy="129" r="5"  fill="white" opacity="0.85"/>
+
+  <!-- Nose -->
+  <ellipse cx="128" cy="184" rx="10" ry="7" fill="#1C0C04"/>
+
+  <!-- Mouth -->
+  <path d="M 118 190 Q 128 198 138 190"
+    stroke="#1C0C04" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+</svg>
