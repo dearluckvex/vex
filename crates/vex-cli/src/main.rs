@@ -242,14 +242,14 @@ fn build_outbound(config: &AppConfig, active_index: Option<usize>) -> Result<Sha
 /// Resolve proxy server hostnames to IPv4 addresses for TUN route bypass.
 async fn collect_proxy_ips(config: &AppConfig, active_index: Option<usize>) -> Vec<Ipv4Addr> {
     let mut ips = Vec::new();
-    if let Some(idx) = active_index {
-        if let Some(node) = config.nodes.get(idx) {
-            let resolved = resolve_to_ipv4(&node.server);
-            if resolved.is_empty() {
-                tracing::warn!("Could not resolve proxy server: {}", node.server);
-            }
-            ips.extend(resolved);
+    if let Some(idx) = active_index
+        && let Some(node) = config.nodes.get(idx)
+    {
+        let resolved = resolve_to_ipv4(&node.server);
+        if resolved.is_empty() {
+            tracing::warn!("Could not resolve proxy server: {}", node.server);
         }
+        ips.extend(resolved);
     }
     ips
 }
