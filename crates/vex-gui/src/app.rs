@@ -1902,6 +1902,30 @@ impl AppState {
             .bg(rgb(BG_SIDEBAR))
             .border_r_1()
             .border_color(rgb(BORDER_COLOR))
+            // Logo / branding strip
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h(px(40.0))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_COLOR))
+                    .child(
+                        img("logo-icon.svg")
+                            .w(px(24.0))
+                            .h(px(24.0)),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(TEXT_PRIMARY))
+                            .child("Vex"),
+                    ),
+            )
             // Nav section
             .child(
                 div()

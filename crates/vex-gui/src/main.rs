@@ -136,6 +136,7 @@ static ICON_ASSETS: &[(&str, &[u8])] = &[
         "icons/eye-off.svg",
         include_bytes!("../assets/icons/eye-off.svg"),
     ),
+    ("logo-icon.svg", include_bytes!("../assets/logo-icon.svg")),
 ];
 
 /// Best-effort cleanup: clear system proxy and restore TUN routes so the OS
