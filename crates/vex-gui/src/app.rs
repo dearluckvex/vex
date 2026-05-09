@@ -377,6 +377,9 @@ impl AppState {
             log_filter_input,
         };
         state.start_auto_refresh(cx);
+        if persisted.auto_connect && persisted.active_node.is_some() {
+            state.auto_connect_on_startup(cx, persisted.tun_was_enabled);
+        }
         state
     }
 
@@ -1441,6 +1444,8 @@ impl AppState {
             active_node: self.selected_node,
             subscriptions: self.subscriptions.clone(),
             rules: self.rules.clone(),
+            auto_connect: self.proxy_running,
+            tun_was_enabled: self.tun_enabled,
         };
 
         if let Err(err) = save_gui_state(&config) {
@@ -1619,6 +1624,58 @@ impl AppState {
 
     /// Start the periodic auto-refresh background task.
     /// Called once at startup; checks for stale subscriptions every 30 minutes.
+    fn auto_connect_on_startup(&mut self, cx: &mut Context<Self>, restore_tun: bool) {
+        let handle = self.tokio_handle.clone();
+        cx.spawn(async move |weak, cx| {
+            // Short delay to let the UI fully initialize before connecting.
+            handle
+                .spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                })
+                .await
+                .ok();
+
+            let proxy_started = weak
+                .update(cx, |this: &mut AppState, cx| {
+                    tracing::info!("Auto-reconnecting to last active node...");
+                    this.start_proxy(cx);
+                    true
+                })
+                .unwrap_or(false);
+
+            if !restore_tun || !proxy_started {
+                return;
+            }
+
+            // Wait for proxy to finish starting before re-enabling TUN.
+            for _ in 0..20 {
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    })
+                    .await
+                    .ok();
+
+                let tun_started = weak
+                    .update(cx, |this: &mut AppState, cx| {
+                        if this.tun_enabled || !this.proxy_running {
+                            false
+                        } else {
+                            tracing::info!("Restoring TUN mode after auto-reconnect...");
+                            this.start_tun(cx);
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if tun_started {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn start_auto_refresh(&mut self, cx: &mut Context<Self>) {
         let handle = self.tokio_handle.clone();
         cx.spawn(async move |weak, cx| {

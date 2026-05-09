@@ -64,6 +64,12 @@ pub struct AppConfig {
     pub subscriptions: Vec<Subscription>,
     /// Routing rules
     pub rules: Vec<RoutingRule>,
+    /// Whether the proxy was running when the app was last closed (auto-reconnect on next start)
+    #[serde(default)]
+    pub auto_connect: bool,
+    /// Whether TUN mode was active when the app was last closed
+    #[serde(default)]
+    pub tun_was_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -77,6 +83,8 @@ impl Default for AppConfig {
             active_node: None,
             subscriptions: Vec::new(),
             rules: Vec::new(),
+            auto_connect: false,
+            tun_was_enabled: false,
         }
     }
 }
