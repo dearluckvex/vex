@@ -340,14 +340,13 @@ async fn handle_tun_stream(
             if pkt.src_addr().is_ipv4()
                 && pkt.ip_protocol() == IpNumber::ICMP
                 && let Ok((icmp_header, req_payload)) = Icmpv4Header::from_slice(pkt.payload())
+                && let etherparse::Icmpv4Type::EchoRequest(echo) = icmp_header.icmp_type
             {
-                if let etherparse::Icmpv4Type::EchoRequest(echo) = icmp_header.icmp_type {
-                    let mut resp = Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
-                    resp.update_checksum(req_payload);
-                    let mut payload = resp.to_bytes().to_vec();
-                    payload.extend_from_slice(req_payload);
-                    let _ = pkt.send(payload);
-                }
+                let mut resp = Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
+                resp.update_checksum(req_payload);
+                let mut payload = resp.to_bytes().to_vec();
+                payload.extend_from_slice(req_payload);
+                let _ = pkt.send(payload);
             }
         }
         IpStackStream::UnknownNetwork(_) => {}
