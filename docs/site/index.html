@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Vex — Cross-Platform Proxy Client</title>
+  <meta name="description" content="A blazing-fast, cross-platform proxy client written in Rust. Supports Shadowsocks, VMess, VLess, TUIC, Trojan, Hysteria2."/>
+  <link rel="icon" type="image/svg+xml" href="../assets/logo-icon.svg"/>
+  <style>
+    /* ─── Reset & base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:          #0d0d0d;
+      --bg2:         #141414;
+      --bg3:         #1c1c1c;
+      --card:        #1e1e1e;
+      --border:      #2a2a2a;
+      --accent:      #4c8ef8;
+      --accent2:     #3b74d7;
+      --orange:      #e8882a;
+      --text:        #d4d4d4;
+      --text2:       #8a9099;
+      --success:     #56b16c;
+      --radius:      12px;
+      --font:        'Inter', 'Segoe UI', system-ui, sans-serif;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ─── Nav ──────────────────────────────────────────────────── */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem; height: 56px;
+      background: rgba(13,13,13,.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo { display: flex; align-items: center; gap: .6rem; }
+    .nav-logo img { width: 28px; height: 28px; }
+    .nav-logo span { font-weight: 700; font-size: 1.1rem; color: #fff; }
+    .nav-links { display: flex; gap: 2rem; }
+    .nav-links a { color: var(--text2); font-size: .9rem; transition: color .2s; }
+    .nav-links a:hover { color: #fff; text-decoration: none; }
+    .nav-cta {
+      background: var(--accent); color: #fff; border: none;
+      padding: .45rem 1.1rem; border-radius: 6px;
+      font-size: .85rem; font-weight: 600; cursor: pointer;
+      transition: background .2s;
+    }
+    .nav-cta:hover { background: var(--accent2); }
+
+    /* ─── Hero ─────────────────────────────────────────────────── */
+    .hero {
+      min-height: 92vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+      padding: 6rem 1.5rem 4rem;
+      position: relative; overflow: hidden;
+    }
+    /* Animated glow blobs */
+    .hero::before, .hero::after {
+      content: '';
+      position: absolute; border-radius: 50%;
+      filter: blur(80px); opacity: .18;
+      animation: drift 8s ease-in-out infinite alternate;
+    }
+    .hero::before {
+      width: 500px; height: 500px;
+      background: var(--accent);
+      top: -100px; left: 10%;
+    }
+    .hero::after {
+      width: 400px; height: 400px;
+      background: var(--orange);
+      bottom: -80px; right: 15%;
+      animation-delay: -4s;
+    }
+    @keyframes drift { from { transform: translate(0,0) scale(1); } to { transform: translate(40px,30px) scale(1.08); } }
+
+    .hero-logo {
+      width: 100px; height: 100px;
+      animation: float 4s ease-in-out infinite;
+      position: relative; z-index: 1;
+    }
+    @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+
+    .hero h1 {
+      font-size: clamp(2.8rem, 6vw, 5rem);
+      font-weight: 800; letter-spacing: -2px;
+      background: linear-gradient(135deg, #fff 30%, var(--accent) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin: 1.2rem 0 .8rem;
+      position: relative; z-index: 1;
+    }
+    .hero p {
+      max-width: 560px; font-size: 1.15rem;
+      color: var(--text2); position: relative; z-index: 1;
+    }
+    .hero-badges {
+      display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center;
+      margin: 1.6rem 0 2.4rem;
+      position: relative; z-index: 1;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: .35rem;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 999px; padding: .3rem .85rem;
+      font-size: .8rem; color: var(--text2);
+    }
+    .badge .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .hero-buttons {
+      display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center;
+      position: relative; z-index: 1;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: .5rem;
+      padding: .72rem 1.6rem; border-radius: 8px;
+      font-size: .95rem; font-weight: 600; cursor: pointer;
+      transition: transform .15s, box-shadow .15s;
+      border: none;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.4); text-decoration: none; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+
+    /* ─── Section wrapper ──────────────────────────────────────── */
+    section { padding: 5rem 1.5rem; max-width: 1100px; margin: 0 auto; }
+    .section-label {
+      display: inline-flex; align-items: center; gap: .4rem;
+      background: rgba(76,142,248,.12); color: var(--accent);
+      border: 1px solid rgba(76,142,248,.25);
+      padding: .3rem .8rem; border-radius: 999px; font-size: .78rem;
+      font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+      margin-bottom: 1rem;
+    }
+    h2 {
+      font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+      font-weight: 700; letter-spacing: -.5px; color: #fff;
+      margin-bottom: .7rem;
+    }
+    .sub { color: var(--text2); max-width: 520px; margin-bottom: 2.5rem; font-size: 1.02rem; }
+
+    /* ─── Feature cards ────────────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.2rem;
+    }
+    .feature-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.6rem;
+      transition: border-color .2s, transform .2s;
+    }
+    .feature-card:hover { border-color: var(--accent); transform: translateY(-3px); }
+    .feature-icon {
+      font-size: 1.6rem; margin-bottom: .9rem;
+      width: 48px; height: 48px;
+      background: rgba(76,142,248,.1); border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .feature-card h3 { font-size: 1.05rem; font-weight: 600; color: #fff; margin-bottom: .4rem; }
+    .feature-card p { font-size: .88rem; color: var(--text2); line-height: 1.6; }
+
+    /* ─── Protocol table ───────────────────────────────────────── */
+    .protocols-wrap { overflow-x: auto; }
+    table {
+      width: 100%; border-collapse: collapse;
+      font-size: .9rem;
+    }
+    thead th {
+      background: var(--bg3); color: var(--text2);
+      font-weight: 600; font-size: .78rem; text-transform: uppercase;
+      letter-spacing: .06em; padding: .85rem 1.2rem;
+      text-align: left; border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .15s; }
+    tbody tr:hover { background: rgba(255,255,255,.03); }
+    tbody td { padding: .85rem 1.2rem; color: var(--text); }
+    .chip {
+      display: inline-block; padding: .2rem .6rem;
+      border-radius: 4px; font-size: .75rem; font-weight: 600;
+      margin: .1rem;
+    }
+    .chip-blue { background: rgba(76,142,248,.15); color: var(--accent); }
+    .chip-green { background: rgba(86,177,108,.15); color: var(--success); }
+    .chip-orange { background: rgba(232,136,42,.15); color: var(--orange); }
+
+    /* ─── Install section ──────────────────────────────────────── */
+    .install-tabs {
+      display: flex; gap: .5rem; margin-bottom: 1rem;
+    }
+    .tab {
+      padding: .45rem 1rem; border-radius: 6px;
+      font-size: .85rem; font-weight: 500; cursor: pointer;
+      background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
+      transition: all .15s;
+    }
+    .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .code-block {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.4rem 1.6rem;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: .88rem; line-height: 1.7; overflow-x: auto;
+      position: relative;
+    }
+    .code-block .c { color: var(--text2); }  /* comment */
+    .code-block .k { color: #c792ea; }       /* keyword */
+    .code-block .s { color: #c3e88d; }       /* string */
+    .code-block .n { color: var(--accent); } /* name/var */
+    .copy-btn {
+      position: absolute; top: .8rem; right: .8rem;
+      background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
+      padding: .3rem .7rem; border-radius: 5px; font-size: .75rem; cursor: pointer;
+      transition: all .15s;
+    }
+    .copy-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    /* ─── Download cards ───────────────────────────────────────── */
+    .download-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+    .download-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.5rem;
+      display: flex; flex-direction: column; gap: .8rem;
+      transition: border-color .2s, transform .2s;
+    }
+    .download-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .platform-icon { font-size: 2rem; }
+    .download-card h3 { font-size: 1rem; font-weight: 600; color: #fff; }
+    .download-card p { font-size: .82rem; color: var(--text2); flex: 1; }
+    .download-links { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .dl-link {
+      display: inline-flex; align-items: center; gap: .3rem;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 5px; padding: .3rem .7rem;
+      font-size: .78rem; color: var(--text2); transition: all .15s;
+    }
+    .dl-link:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+    /* ─── Stats bar ────────────────────────────────────────────── */
+    .stats {
+      display: flex; flex-wrap: wrap; justify-content: center; gap: 3rem;
+      padding: 3rem 1.5rem;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    .stat-item { text-align: center; }
+    .stat-num {
+      font-size: 2.2rem; font-weight: 800; color: #fff;
+      background: linear-gradient(135deg, #fff, var(--accent));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .stat-label { font-size: .82rem; color: var(--text2); margin-top: .2rem; }
+
+    /* ─── Footer ───────────────────────────────────────────────── */
+    footer {
+      background: var(--bg2); border-top: 1px solid var(--border);
+      padding: 2.5rem 1.5rem; text-align: center; color: var(--text2);
+      font-size: .85rem;
+    }
+    footer .footer-logo { display: flex; align-items: center; justify-content: center; gap: .5rem; margin-bottom: 1rem; }
+    footer .footer-logo img { width: 22px; height: 22px; }
+    footer .footer-logo span { color: #fff; font-weight: 700; }
+    footer .footer-links { display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    footer .footer-links a { color: var(--text2); transition: color .15s; }
+    footer .footer-links a:hover { color: #fff; text-decoration: none; }
+
+    /* ─── Responsive ───────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      .nav-links { display: none; }
+      .features-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">
+    <img src="../assets/logo-icon.svg" alt="Vex logo"/>
+    <span>Vex</span>
+  </div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#protocols">Protocols</a>
+    <a href="#install">Install</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/YOUR_USERNAME/vex">GitHub</a>
+  </div>
+  <a href="https://github.com/YOUR_USERNAME/vex/releases" class="nav-cta">
+    Download ↓
+  </a>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <img class="hero-logo" src="../assets/logo-icon.svg" alt="Vex"/>
+  <h1>Fast. Flexible.<br/>Proxy Done Right.</h1>
+  <p>A cross-platform proxy client written in Rust. Lightweight GUI and CLI, supporting the latest proxy protocols with smart routing and TUN-level transparency.</p>
+
+  <div class="hero-badges">
+    <span class="badge"><span class="dot" style="background:#56b16c"></span>Rust</span>
+    <span class="badge"><span class="dot" style="background:#4c8ef8"></span>Cross-Platform</span>
+    <span class="badge"><span class="dot" style="background:#e8882a"></span>Multi-Protocol</span>
+    <span class="badge"><span class="dot" style="background:#c792ea"></span>Open Source</span>
+  </div>
+
+  <div class="hero-buttons">
+    <a href="https://github.com/YOUR_USERNAME/vex/releases" class="btn btn-primary">
+      ⬇ Download Latest
+    </a>
+    <a href="https://github.com/YOUR_USERNAME/vex" class="btn btn-secondary">
+      ★ View on GitHub
+    </a>
+  </div>
+</div>
+
+<!-- STATS -->
+<div class="stats">
+  <div class="stat-item"><div class="stat-num">6</div><div class="stat-label">Proxy Protocols</div></div>
+  <div class="stat-item"><div class="stat-num">3</div><div class="stat-label">Platforms</div></div>
+  <div class="stat-item"><div class="stat-num">5</div><div class="stat-label">Arch Targets</div></div>
+  <div class="stat-item"><div class="stat-num">100%</div><div class="stat-label">Written in Rust</div></div>
+</div>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="section-label">✦ Features</div>
+  <h2>Everything you need.<br/>Nothing you don't.</h2>
+  <p class="sub">Built from the ground up for speed and reliability, with a clean dual interface for power users and beginners alike.</p>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">⚡</div>
+      <h3>Blazing Fast Core</h3>
+      <p>Zero-cost Rust async runtime with Tokio. QUIC transport, connection pooling, and direct kernel TUN bypass for sub-millisecond overhead.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🌍</div>
+      <h3>Smart Routing</h3>
+      <p>Rule-based routing with GeoIP, domain suffix/keyword matching, and IP-CIDR rules. Built-in CN/overseas split with custom override support.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔒</div>
+      <h3>TLS Fingerprint Spoofing</h3>
+      <p>Custom-patched rustls (craftls) to mimic browser TLS fingerprints. Bypass deep-packet inspection that targets Rust's default TLS handshake.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📡</div>
+      <h3>Subscription Management</h3>
+      <p>Auto-fetch from Clash, V2Ray/VMess, and SingBox subscription URLs. One-click update, rename, tag, and batch latency test.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🖥️</div>
+      <h3>Dual Interface</h3>
+      <p>Full-featured GUI powered by GPUI (the same engine as Zed editor), plus a lightweight CLI for headless and scripted deployments.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🌐</div>
+      <h3>TUN Mode</h3>
+      <p>System-level transparent proxy via TUN device. Route all TCP/UDP traffic through the proxy without per-app configuration.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🧪</div>
+      <h3>Latency Testing</h3>
+      <p>TCP latency, HTTP latency, and throughput speed tests per node. Auto-select fastest node after batch testing.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔗</div>
+      <h3>System Proxy Integration</h3>
+      <p>One-click OS-level HTTP/HTTPS proxy configuration. Automatic cleanup on exit so no settings are left dangling.</p>
+    </div>
+  </div>
+</section>
+
+<!-- PROTOCOLS -->
+<section id="protocols" style="padding-top: 0;">
+  <div class="section-label">📡 Protocols</div>
+  <h2>All the protocols that matter.</h2>
+  <p class="sub">Support for every major proxy protocol with the latest transport options — including QUIC-based next-gen protocols.</p>
+
+  <div class="protocols-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Protocol</th>
+          <th>Transport</th>
+          <th>Obfuscation</th>
+          <th>Use Case</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Shadowsocks</strong></td>
+          <td><span class="chip chip-blue">TCP</span><span class="chip chip-blue">UDP</span></td>
+          <td><span class="chip chip-green">AEAD 2022</span></td>
+          <td>General purpose, lightweight</td>
+        </tr>
+        <tr>
+          <td><strong>VMess</strong></td>
+          <td><span class="chip chip-blue">TCP</span><span class="chip chip-blue">WebSocket</span><span class="chip chip-blue">TLS</span></td>
+          <td><span class="chip chip-green">TLS fingerprint</span></td>
+          <td>CDN-friendly, high compatibility</td>
+        </tr>
+        <tr>
+          <td><strong>VLess</strong></td>
+          <td><span class="chip chip-blue">TCP</span><span class="chip chip-blue">WebSocket</span><span class="chip chip-orange">REALITY</span></td>
+          <td><span class="chip chip-orange">REALITY</span><span class="chip chip-green">TLS</span></td>
+          <td>Low overhead, advanced obfuscation</td>
+        </tr>
+        <tr>
+          <td><strong>Trojan</strong></td>
+          <td><span class="chip chip-blue">TLS</span></td>
+          <td><span class="chip chip-green">HTTPS camouflage</span></td>
+          <td>Looks like HTTPS traffic</td>
+        </tr>
+        <tr>
+          <td><strong>TUIC v5</strong></td>
+          <td><span class="chip chip-orange">QUIC</span></td>
+          <td><span class="chip chip-green">TLS 1.3</span></td>
+          <td>Low latency, 0-RTT reconnect</td>
+        </tr>
+        <tr>
+          <td><strong>Hysteria2</strong></td>
+          <td><span class="chip chip-orange">QUIC</span></td>
+          <td><span class="chip chip-green">TLS 1.3</span></td>
+          <td>High throughput, lossy networks</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section id="install" style="padding-top: 0;">
+  <div class="section-label">🚀 Quick Start</div>
+  <h2>Up and running in seconds.</h2>
+  <p class="sub">Clone, build, and configure. Or grab a pre-built binary from the releases page.</p>
+
+  <div class="install-tabs">
+    <button class="tab active" onclick="showTab('gui')">GUI</button>
+    <button class="tab" onclick="showTab('cli')">CLI</button>
+    <button class="tab" onclick="showTab('build')">Build from Source</button>
+  </div>
+
+  <div id="tab-gui" class="code-block">
+    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+    <span class="c"># Download from GitHub Releases, then run:</span><br/>
+    <span class="n">./vex</span>
+  </div>
+
+  <div id="tab-cli" class="code-block" style="display:none">
+    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+    <span class="c"># Generate default config</span><br/>
+    <span class="n">vex-cli</span> <span class="k">--init</span> config.yaml<br/><br/>
+    <span class="c"># Edit config.yaml, then start</span><br/>
+    <span class="n">vex-cli</span> config.yaml
+  </div>
+
+  <div id="tab-build" class="code-block" style="display:none">
+    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+    <span class="c"># Clone the repository</span><br/>
+    <span class="n">git clone</span> https://github.com/YOUR_USERNAME/vex.git &amp;&amp; <span class="n">cd</span> vex<br/><br/>
+    <span class="c"># Build GUI</span><br/>
+    <span class="n">cargo build</span> <span class="k">--release</span> <span class="k">--package</span> vex-gui<br/><br/>
+    <span class="c"># Build CLI</span><br/>
+    <span class="n">cargo build</span> <span class="k">--release</span> <span class="k">--package</span> vex-cli
+  </div>
+</section>
+
+<!-- DOWNLOAD -->
+<section id="download" style="padding-top: 0;">
+  <div class="section-label">⬇ Download</div>
+  <h2>Available on every platform.</h2>
+  <p class="sub">Pre-built binaries for Linux, macOS, and Windows. Both GUI and CLI flavors.</p>
+
+  <div class="download-grid">
+    <div class="download-card">
+      <div class="platform-icon">🐧</div>
+      <h3>Linux</h3>
+      <p>x86_64 and aarch64 (ARM64) binaries. Works on Ubuntu, Debian, Arch, and more.</p>
+      <div class="download-links">
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">GUI x86_64</a>
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">GUI aarch64</a>
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">CLI x86_64</a>
+      </div>
+    </div>
+    <div class="download-card">
+      <div class="platform-icon">🍎</div>
+      <h3>macOS</h3>
+      <p>Intel and Apple Silicon (M-series) native builds. No Rosetta required.</p>
+      <div class="download-links">
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">GUI Apple Silicon</a>
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">GUI Intel</a>
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">CLI</a>
+      </div>
+    </div>
+    <div class="download-card">
+      <div class="platform-icon">🪟</div>
+      <h3>Windows</h3>
+      <p>Native x86_64 executable with embedded icon. No WSL required.</p>
+      <div class="download-links">
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">GUI .exe</a>
+        <a href="https://github.com/YOUR_USERNAME/vex/releases" class="dl-link">CLI .exe</a>
+      </div>
+    </div>
+    <div class="download-card">
+      <div class="platform-icon">📦</div>
+      <h3>Source</h3>
+      <p>Build from source with <code>cargo build --release</code>. Rust stable toolchain required.</p>
+      <div class="download-links">
+        <a href="https://github.com/YOUR_USERNAME/vex" class="dl-link">GitHub →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">
+    <img src="../assets/logo-icon.svg" alt="Vex"/>
+    <span>Vex</span>
+  </div>
+  <div class="footer-links">
+    <a href="https://github.com/YOUR_USERNAME/vex">GitHub</a>
+    <a href="https://github.com/YOUR_USERNAME/vex/releases">Releases</a>
+    <a href="https://github.com/YOUR_USERNAME/vex/issues">Issues</a>
+    <a href="../getting-started.md">Docs</a>
+    <a href="https://github.com/YOUR_USERNAME/vex/blob/main/LICENSE">Apache 2.0</a>
+  </div>
+  <p>Built with ♥ in Rust. © 2025 Vex Contributors.</p>
+</footer>
+
+<script>
+  // Tab switcher
+  function showTab(name) {
+    ['gui','cli','build'].forEach(t => {
+      document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none';
+    });
+    document.querySelectorAll('.tab').forEach((btn, i) => {
+      btn.classList.toggle('active', ['gui','cli','build'][i] === name);
+    });
+  }
+
+  // Copy code block
+  function copyCode(btn) {
+    const block = btn.parentElement;
+    const text = block.innerText.replace('Copy\n','').trim();
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = '✓ Copied';
+      setTimeout(() => btn.textContent = 'Copy', 1800);
+    });
+  }
+
+  // Intersection observer for subtle fade-in animations
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.style.opacity = '1';
+        e.target.style.transform = 'translateY(0)';
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.feature-card, .download-card').forEach(el => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(20px)';
+    el.style.transition = 'opacity .5s ease, transform .5s ease';
+    observer.observe(el);
+  });
+</script>
+</body>
+</html>
