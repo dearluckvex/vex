@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml"><img src="https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="https://github.com/YOUR_USERNAME/vex/releases"><img src="https://github.com/YOUR_USERNAME/vex/actions/workflows/release.yml/badge.svg" alt="Release"/></a>
+  <a href="https://github.com/dearluckvex/vex/actions/workflows/ci.yml"><img src="https://github.com/dearluckvex/vex/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://github.com/dearluckvex/vex/releases"><img src="https://github.com/dearluckvex/vex/actions/workflows/release.yml/badge.svg" alt="Release"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
 </p>
 
@@ -34,7 +34,7 @@ A cross-platform proxy client written in Rust, supporting multiple protocols, su
 
 ### Pre-built binaries
 
-Download the latest release from [GitHub Releases](https://github.com/YOUR_USERNAME/vex/releases):
+Download the latest release from [GitHub Releases](https://github.com/dearluckvex/vex/releases):
 
 | Platform       | CLI binary                      | GUI binary                  |
 |----------------|---------------------------------|-----------------------------|
@@ -63,7 +63,7 @@ Download the latest release from [GitHub Releases](https://github.com/YOUR_USERN
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/vex.git
+git clone https://github.com/dearluckvex/vex.git
 cd vex
 
 # Build CLI

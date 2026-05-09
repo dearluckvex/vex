@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml"><img src="https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="https://github.com/YOUR_USERNAME/vex/releases"><img src="https://github.com/YOUR_USERNAME/vex/actions/workflows/release.yml/badge.svg" alt="Release"/></a>
+  <a href="https://github.com/dearluckvex/vex/actions/workflows/ci.yml"><img src="https://github.com/dearluckvex/vex/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://github.com/dearluckvex/vex/releases"><img src="https://github.com/dearluckvex/vex/actions/workflows/release.yml/badge.svg" alt="Release"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
 </p>
 
@@ -34,7 +34,7 @@
 
 ### 预构建二进制文件
 
-从 [GitHub Releases](https://github.com/YOUR_USERNAME/vex/releases) 下载最新版本：
+从 [GitHub Releases](https://github.com/dearluckvex/vex/releases) 下载最新版本：
 
 | 平台             | CLI 二进制文件                   | GUI 二进制文件               |
 |------------------|----------------------------------|-----------------------------|
@@ -63,7 +63,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/YOUR_USERNAME/vex.git
+git clone https://github.com/dearluckvex/vex.git
 cd vex
 
 # 构建 CLI

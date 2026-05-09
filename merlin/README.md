@@ -44,7 +44,7 @@ sh install.sh armv7
 
 ```sh
 # 设置你的 GitHub 仓库（包含 Release 的仓库）
-export VEX_GITHUB_REPO="YOUR_USERNAME/vex"
+export VEX_GITHUB_REPO="dearluckvex/vex"
 
 sh install.sh --online
 sh install.sh --online aarch64
