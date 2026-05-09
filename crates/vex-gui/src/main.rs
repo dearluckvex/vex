@@ -1,3 +1,10 @@
+// Hide the Windows console window for the GUI app.
+// The in-app Logs panel captures all output instead.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod app;
 mod components;
 mod log_buffer;
