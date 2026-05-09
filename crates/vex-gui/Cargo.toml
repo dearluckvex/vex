@@ -8,6 +8,10 @@ license.workspace = true
 name = "vex"
 path = "src/main.rs"
 
+[build-dependencies]
+# Windows: embed .ico into the executable
+winresource = "0.1"
+
 [dependencies]
 vex-core = { workspace = true }
 gpui = { workspace = true }

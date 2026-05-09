@@ -2,8 +2,8 @@ pub mod connector;
 pub mod factory;
 pub mod http;
 pub mod hysteria2;
-pub mod quic_conn;
 pub mod pool;
+pub mod quic_conn;
 pub mod relay;
 pub mod routing;
 pub mod service;
@@ -86,6 +86,7 @@ impl ProxyStats {
             .fetch_sub(1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn add_bytes(&self, sent: u64, received: u64) {
         self.inner.bytes_sent.fetch_add(sent, Ordering::Relaxed);
         self.inner

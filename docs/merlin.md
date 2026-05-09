@@ -28,7 +28,7 @@ uname -m
 
 ### 1. 下载插件包
 
-从 [GitHub Releases](https://github.com/YOUR_USERNAME/vex/releases) 下载对应架构的插件包：
+从 [GitHub Releases](https://github.com/dearluckvex/vex/releases) 下载对应架构的插件包：
 
 | 架构 | 包名 | 适用型号 |
 |------|------|---------|

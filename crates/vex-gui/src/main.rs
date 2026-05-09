@@ -1,11 +1,18 @@
+// Hide the Windows console window for the GUI app.
+// The in-app Logs panel captures all output instead.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod app;
 mod components;
 mod log_buffer;
 mod views;
 
-use std::borrow::Cow;
 use gpui::*;
 use gpui_component::*;
+use std::borrow::Cow;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -41,35 +48,102 @@ impl AssetSource for Assets {
 
 /// Statically embedded icon assets.
 static ICON_ASSETS: &[(&str, &[u8])] = &[
-    ("icons/window-close.svg",    include_bytes!("../assets/icons/window-close.svg")),
-    ("icons/window-minimize.svg", include_bytes!("../assets/icons/window-minimize.svg")),
-    ("icons/window-maximize.svg", include_bytes!("../assets/icons/window-maximize.svg")),
-    ("icons/window-restore.svg",  include_bytes!("../assets/icons/window-restore.svg")),
-    ("icons/layout-dashboard.svg",include_bytes!("../assets/icons/layout-dashboard.svg")),
-    ("icons/globe.svg",           include_bytes!("../assets/icons/globe.svg")),
-    ("icons/settings-2.svg",      include_bytes!("../assets/icons/settings-2.svg")),
-    ("icons/map.svg",             include_bytes!("../assets/icons/map.svg")),
-    ("icons/settings.svg",        include_bytes!("../assets/icons/settings.svg")),
-    ("icons/square-terminal.svg", include_bytes!("../assets/icons/square-terminal.svg")),
-    ("icons/chevron-down.svg",    include_bytes!("../assets/icons/chevron-down.svg")),
-    ("icons/chevron-right.svg",   include_bytes!("../assets/icons/chevron-right.svg")),
-    ("icons/check.svg",           include_bytes!("../assets/icons/check.svg")),
-    ("icons/x.svg",               include_bytes!("../assets/icons/x.svg")),
-    ("icons/plus.svg",            include_bytes!("../assets/icons/plus.svg")),
-    ("icons/minus.svg",           include_bytes!("../assets/icons/minus.svg")),
-    ("icons/search.svg",          include_bytes!("../assets/icons/search.svg")),
-    ("icons/loader.svg",          include_bytes!("../assets/icons/loader.svg")),
-    ("icons/circle.svg",          include_bytes!("../assets/icons/circle.svg")),
-    ("icons/circle-check.svg",    include_bytes!("../assets/icons/circle-check.svg")),
-    ("icons/circle-x.svg",        include_bytes!("../assets/icons/circle-x.svg")),
-    ("icons/info.svg",            include_bytes!("../assets/icons/info.svg")),
-    ("icons/alert-triangle.svg",  include_bytes!("../assets/icons/alert-triangle.svg")),
-    ("icons/trash-2.svg",         include_bytes!("../assets/icons/trash-2.svg")),
-    ("icons/edit.svg",            include_bytes!("../assets/icons/edit.svg")),
-    ("icons/copy.svg",            include_bytes!("../assets/icons/copy.svg")),
-    ("icons/clipboard.svg",       include_bytes!("../assets/icons/clipboard.svg")),
-    ("icons/eye.svg",             include_bytes!("../assets/icons/eye.svg")),
-    ("icons/eye-off.svg",         include_bytes!("../assets/icons/eye-off.svg")),
+    (
+        "icons/window-close.svg",
+        include_bytes!("../assets/icons/window-close.svg"),
+    ),
+    (
+        "icons/window-minimize.svg",
+        include_bytes!("../assets/icons/window-minimize.svg"),
+    ),
+    (
+        "icons/window-maximize.svg",
+        include_bytes!("../assets/icons/window-maximize.svg"),
+    ),
+    (
+        "icons/window-restore.svg",
+        include_bytes!("../assets/icons/window-restore.svg"),
+    ),
+    (
+        "icons/layout-dashboard.svg",
+        include_bytes!("../assets/icons/layout-dashboard.svg"),
+    ),
+    (
+        "icons/globe.svg",
+        include_bytes!("../assets/icons/globe.svg"),
+    ),
+    (
+        "icons/settings-2.svg",
+        include_bytes!("../assets/icons/settings-2.svg"),
+    ),
+    ("icons/map.svg", include_bytes!("../assets/icons/map.svg")),
+    (
+        "icons/settings.svg",
+        include_bytes!("../assets/icons/settings.svg"),
+    ),
+    (
+        "icons/square-terminal.svg",
+        include_bytes!("../assets/icons/square-terminal.svg"),
+    ),
+    (
+        "icons/chevron-down.svg",
+        include_bytes!("../assets/icons/chevron-down.svg"),
+    ),
+    (
+        "icons/chevron-right.svg",
+        include_bytes!("../assets/icons/chevron-right.svg"),
+    ),
+    (
+        "icons/check.svg",
+        include_bytes!("../assets/icons/check.svg"),
+    ),
+    ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
+    ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
+    (
+        "icons/minus.svg",
+        include_bytes!("../assets/icons/minus.svg"),
+    ),
+    (
+        "icons/search.svg",
+        include_bytes!("../assets/icons/search.svg"),
+    ),
+    (
+        "icons/loader.svg",
+        include_bytes!("../assets/icons/loader.svg"),
+    ),
+    (
+        "icons/circle.svg",
+        include_bytes!("../assets/icons/circle.svg"),
+    ),
+    (
+        "icons/circle-check.svg",
+        include_bytes!("../assets/icons/circle-check.svg"),
+    ),
+    (
+        "icons/circle-x.svg",
+        include_bytes!("../assets/icons/circle-x.svg"),
+    ),
+    ("icons/info.svg", include_bytes!("../assets/icons/info.svg")),
+    (
+        "icons/alert-triangle.svg",
+        include_bytes!("../assets/icons/alert-triangle.svg"),
+    ),
+    (
+        "icons/trash-2.svg",
+        include_bytes!("../assets/icons/trash-2.svg"),
+    ),
+    ("icons/edit.svg", include_bytes!("../assets/icons/edit.svg")),
+    ("icons/copy.svg", include_bytes!("../assets/icons/copy.svg")),
+    (
+        "icons/clipboard.svg",
+        include_bytes!("../assets/icons/clipboard.svg"),
+    ),
+    ("icons/eye.svg", include_bytes!("../assets/icons/eye.svg")),
+    (
+        "icons/eye-off.svg",
+        include_bytes!("../assets/icons/eye-off.svg"),
+    ),
+    ("logo-icon.svg", include_bytes!("../assets/logo-icon.svg")),
 ];
 
 /// Best-effort cleanup: clear system proxy and restore TUN routes so the OS

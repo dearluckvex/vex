@@ -93,7 +93,15 @@ impl DnsResolver {
     pub fn new() -> Self {
         Self::with_config(DnsConfig::default())
     }
+}
 
+impl Default for DnsResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DnsResolver {
     /// Create a new resolver with custom config.
     pub fn with_config(config: DnsConfig) -> Self {
         let doh_client = reqwest::Client::builder()
@@ -206,14 +214,13 @@ impl DnsResolver {
                         cache.retain(|_, e| e.expires_at > now);
 
                         // If still over limit, evict least-recently-used
-                        if cache.len() >= DNS_CACHE_MAX_ENTRIES {
-                            if let Some(lru_key) = cache
+                        if cache.len() >= DNS_CACHE_MAX_ENTRIES
+                            && let Some(lru_key) = cache
                                 .iter()
                                 .min_by_key(|(_, e)| e.last_used)
                                 .map(|(k, _)| k.clone())
-                            {
-                                cache.remove(&lru_key);
-                            }
+                        {
+                            cache.remove(&lru_key);
                         }
 
                         cache.insert(
@@ -235,10 +242,10 @@ impl DnsResolver {
         // Try fallback if primary failed
         if group == DnsGroup::Primary && !self.config.fallback.is_empty() {
             for server in &self.config.fallback {
-                if let Ok(addrs) = self.query_server(server, domain).await {
-                    if !addrs.is_empty() {
-                        return Ok(addrs);
-                    }
+                if let Ok(addrs) = self.query_server(server, domain).await
+                    && !addrs.is_empty()
+                {
+                    return Ok(addrs);
                 }
             }
         }
@@ -421,6 +428,7 @@ fn parse_dns_response(data: &[u8]) -> Result<Vec<IpAddr>> {
 }
 
 /// Skip a DNS name (handles compression pointers).
+#[allow(unused_assignments)]
 fn skip_dns_name(data: &[u8], mut pos: usize) -> Result<usize> {
     let mut jumped = false;
     loop {

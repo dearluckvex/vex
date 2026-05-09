@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::connector::{BoxProxyStream, DirectOutbound, Outbound, SharedOutbound};
+use super::connector::{BoxProxyStream, Outbound, SharedOutbound};
 use crate::router::{RouteAction, Router};
 
 /// An outbound that routes connections through a Router, dispatching to

@@ -30,7 +30,12 @@ impl VlessOutbound {
         let uuid = uuid::Uuid::parse_str(uuid_str)?;
 
         let (tls_config, use_tls) = resolve_transport_tls(transport, server);
-        let factory = Arc::new(TlsConnFactory::new(server, port, tls_config.as_ref(), use_tls));
+        let factory = Arc::new(TlsConnFactory::new(
+            server,
+            port,
+            tls_config.as_ref(),
+            use_tls,
+        ));
         let pool = ConnPool::new(factory);
 
         Ok(Self {

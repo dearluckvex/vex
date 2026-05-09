@@ -135,9 +135,7 @@ impl Router {
         Self {
             rules,
             geoip: None,
-            cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(ROUTE_CACHE_CAP).unwrap(),
-            )),
+            cache: RwLock::new(LruCache::new(NonZeroUsize::new(ROUTE_CACHE_CAP).unwrap())),
         }
     }
 
@@ -150,10 +148,10 @@ impl Router {
     /// `host` can be a domain name or IP address string.
     pub fn route(&self, host: &str, port: u16) -> RouteAction {
         // Fast path: check cache using peek() — avoids requiring &mut self under read lock
-        if let Ok(cache) = self.cache.read() {
-            if let Some(action) = cache.peek(host) {
-                return action.clone();
-            }
+        if let Ok(cache) = self.cache.read()
+            && let Some(action) = cache.peek(host)
+        {
+            return action.clone();
         }
 
         let action = self.route_uncached(host, port);
@@ -183,14 +181,14 @@ impl Router {
                 MatchRule::DomainKeyword(keyword) => host_lower.contains(keyword.as_str()),
 
                 MatchRule::IpCidr { addr, prefix_len } => {
-                    ip.map_or(false, |ip| cidr_match(ip, *addr, *prefix_len))
+                    ip.is_some_and(|ip| cidr_match(ip, *addr, *prefix_len))
                 }
 
                 MatchRule::GeoIp(country) => {
                     if let (Some(ip), Some(geoip)) = (&ip, &self.geoip) {
                         geoip
                             .lookup(*ip)
-                            .map_or(false, |cc| cc.eq_ignore_ascii_case(country))
+                            .is_some_and(|cc| cc.eq_ignore_ascii_case(country))
                     } else {
                         false
                     }

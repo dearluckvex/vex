@@ -111,10 +111,10 @@ fn parse_host_port(target: &str, default_port: u16) -> Result<(String, u16)> {
     }
 
     // Handle host:port
-    if let Some(colon) = target.rfind(':') {
-        if let Ok(port) = target[colon + 1..].parse::<u16>() {
-            return Ok((target[..colon].to_string(), port));
-        }
+    if let Some(colon) = target.rfind(':')
+        && let Ok(port) = target[colon + 1..].parse::<u16>()
+    {
+        return Ok((target[..colon].to_string(), port));
     }
     Ok((target.to_string(), default_port))
 }

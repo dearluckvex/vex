@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             cli_artifact: vex-cli
             gui_artifact: vex
@@ -57,7 +57,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -65,7 +65,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry & build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -235,7 +235,7 @@ jobs:
   # them together with all plugin scripts into vex-merlin-*.tar.gz archives.
   merlin-package:
     name: Merlin Plugin (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -247,7 +247,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -255,7 +255,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry & build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -310,9 +310,14 @@ jobs:
           tar -czf "${PKG_NAME}.tar.gz" "$PKG_DIR"
           echo "Package: $(du -sh ${PKG_NAME}.tar.gz | cut -f1)  ${PKG_NAME}.tar.gz"
 
-      - name: Upload Merlin package to release
+          # Expose standalone binary for install.sh --online mode
+          cp "$PKG_DIR/bin/vex-cli-${{ matrix.arch }}" "vex-cli-linux-${{ matrix.arch }}"
+
+      - name: Upload Merlin package and binary to release
         uses: softprops/action-gh-release@v2
         with:
-          files: vex-merlin-${{ matrix.arch }}.tar.gz
+          files: |
+            vex-merlin-${{ matrix.arch }}.tar.gz
+            vex-cli-linux-${{ matrix.arch }}
           generate_release_notes: false
 

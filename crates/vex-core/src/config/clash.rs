@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use super::model::*;
 
 /// Clash YAML configuration top-level structure
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ClashConfig {
     #[serde(default)]
@@ -13,6 +14,7 @@ struct ClashConfig {
     proxy_groups: Vec<ClashProxyGroup>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ClashProxy {
     name: String,
@@ -75,6 +77,7 @@ struct ClashRealityOpts {
     short_id: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ClashProxyGroup {
     name: String,
@@ -210,19 +213,19 @@ fn build_transport(proxy: &ClashProxy) -> Option<TransportConfig> {
     let force_tls = matches!(proxy_type, "tuic" | "hysteria2" | "hy2");
 
     // Reality transport
-    if let Some(ref reality) = proxy.reality_opts {
-        if let Some(pk) = &reality.public_key {
-            return Some(TransportConfig {
-                transport_type: TransportType::Reality,
-                tls: None,
-                ws: None,
-                reality: Some(RealityConfig {
-                    public_key: pk.clone(),
-                    short_id: reality.short_id.clone().unwrap_or_default(),
-                    sni: proxy.servername.clone().or_else(|| proxy.sni.clone()),
-                }),
-            });
-        }
+    if let Some(ref reality) = proxy.reality_opts
+        && let Some(pk) = &reality.public_key
+    {
+        return Some(TransportConfig {
+            transport_type: TransportType::Reality,
+            tls: None,
+            ws: None,
+            reality: Some(RealityConfig {
+                public_key: pk.clone(),
+                short_id: reality.short_id.clone().unwrap_or_default(),
+                sni: proxy.servername.clone().or_else(|| proxy.sni.clone()),
+            }),
+        });
     }
 
     let has_tls = proxy.tls || force_tls;

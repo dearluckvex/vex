@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::IpAddr;
 
 /// A lightweight GeoIP database for country-level lookups.
@@ -54,9 +53,9 @@ impl GeoIpDb {
     /// Sort entries for efficient lookup (longest prefix first).
     pub fn build(&mut self) {
         self.v4_entries
-            .sort_by(|a, b| b.prefix_len.cmp(&a.prefix_len));
+            .sort_by_key(|b| std::cmp::Reverse(b.prefix_len));
         self.v6_entries
-            .sort_by(|a, b| b.prefix_len.cmp(&a.prefix_len));
+            .sort_by_key(|b| std::cmp::Reverse(b.prefix_len));
     }
 
     /// Lookup the country code for an IP address.

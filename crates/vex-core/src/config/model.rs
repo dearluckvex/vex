@@ -2,21 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Proxy routing mode
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProxyMode {
     /// All traffic goes through the proxy node
+    #[default]
     Global,
     /// China-direct / overseas-proxy based on built-in rules
     Rule,
     /// All traffic connects directly (no proxy)
     Direct,
-}
-
-impl Default for ProxyMode {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 /// Decode a percent-encoded display name.
@@ -69,6 +64,12 @@ pub struct AppConfig {
     pub subscriptions: Vec<Subscription>,
     /// Routing rules
     pub rules: Vec<RoutingRule>,
+    /// Whether the proxy was running when the app was last closed (auto-reconnect on next start)
+    #[serde(default)]
+    pub auto_connect: bool,
+    /// Whether TUN mode was active when the app was last closed
+    #[serde(default)]
+    pub tun_was_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -82,6 +83,8 @@ impl Default for AppConfig {
             active_node: None,
             subscriptions: Vec::new(),
             rules: Vec::new(),
+            auto_connect: false,
+            tun_was_enabled: false,
         }
     }
 }

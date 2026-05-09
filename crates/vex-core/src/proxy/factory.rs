@@ -114,6 +114,7 @@ mod tests {
                 reality: None,
             }),
             latency_ms: None,
+            tags: vec![],
             extra: Default::default(),
         };
 
@@ -143,6 +144,7 @@ mod tests {
                 reality: None,
             }),
             latency_ms: None,
+            tags: vec![],
             extra: Default::default(),
         };
 
@@ -163,6 +165,7 @@ mod tests {
             },
             transport: None,
             latency_ms: None,
+            tags: vec![],
             extra: Default::default(),
         };
 

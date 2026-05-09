@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main", "master", "dev"]
+    branches: ["main", "master", "dev", "feat/**", "fix/**"]
   pull_request:
     branches: ["main", "master", "dev"]
 
@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -39,7 +39,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry & build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -88,11 +88,27 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --target ${{ matrix.target }}
 
+      # ── Collect artifacts ──────────────────────────────────────────────────
+      - name: Collect CLI binary
+        shell: bash
+        run: |
+          EXT=""
+          [[ "${{ runner.os }}" == "Windows" ]] && EXT=".exe"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/debug/vex-cli${EXT} dist/vex-cli_${{ matrix.target }}${EXT}
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vex-cli_${{ matrix.target }}
+          path: dist/
+          retention-days: 7
+
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -106,7 +122,7 @@ jobs:
             libasound2-dev libfontconfig1-dev \
             libfreetype6-dev pkg-config clang
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -117,11 +133,72 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace -- -D warnings
 
+  # ── Merlin Router cross-compile check ────────────────────────────────────────
+  merlin:
+    name: Merlin CLI (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: armv7
+            target: armv7-unknown-linux-musleabihf
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: merlin-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: merlin-${{ matrix.arch }}-cargo-
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Cross-compile CLI for ${{ matrix.arch }}
+        run: cross build --release --package vex-cli --target ${{ matrix.target }}
+
+      - name: Package Merlin plugin
+        run: |
+          PKG="vex-merlin-${{ matrix.arch }}"
+          mkdir -p "$PKG/bin"
+          # Binary
+          cp target/${{ matrix.target }}/release/vex-cli "$PKG/bin/vex-cli-${{ matrix.arch }}"
+          chmod +x "$PKG/bin/vex-cli-${{ matrix.arch }}"
+          # Plugin files
+          cp merlin/install.sh merlin/uninstall.sh merlin/config.yaml.template "$PKG/"
+          cp -r merlin/scripts merlin/webui "$PKG/"
+          chmod +x "$PKG/install.sh" "$PKG/uninstall.sh" \
+                   "$PKG/scripts/vex.sh" "$PKG/scripts/iptables.sh" \
+                   "$PKG/webui/cgi-bin/vex.cgi"
+          tar -czf "${PKG}.tar.gz" "$PKG"
+
+      - name: Upload Merlin plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vex-merlin-${{ matrix.arch }}
+          path: vex-merlin-${{ matrix.arch }}.tar.gz
+          retention-days: 14
+
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

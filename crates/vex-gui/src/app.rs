@@ -1,7 +1,7 @@
-use gpui::*;
 use gpui::prelude::FluentBuilder as _;
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui::*;
 use gpui_component::Disableable as _;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::InputState;
 use gpui_component::tag::Tag;
 use gpui_component::{Icon, IconName, Sizable as _, TitleBar};
@@ -39,21 +39,21 @@ use vex_core::{
 };
 
 // Color palette — Zed Pro Onyx-inspired dark theme
-const BG_PRIMARY: u32 = 0x1c1c1c;      // Main content background
-const BG_SIDEBAR: u32 = 0x141414;      // Panel / sidebar
-const BG_CARD: u32 = 0x242424;         // Elevated surface
-const BG_CARD_HOVER: u32 = 0x2b2b2b;  // Hover lift
-const BORDER_COLOR: u32 = 0x333333;   // Subtle structural border
-const ACCENT: u32 = 0x4c8ef8;         // Primary blue accent
-const ACCENT_DIM: u32 = 0x3b74d7;     // Dimmer accent for indicators
-const TEXT_PRIMARY: u32 = 0xc5c5c5;   // Main readable text
+const BG_PRIMARY: u32 = 0x1c1c1c; // Main content background
+const BG_SIDEBAR: u32 = 0x141414; // Panel / sidebar
+const BG_CARD: u32 = 0x242424; // Elevated surface
+const BG_CARD_HOVER: u32 = 0x2b2b2b; // Hover lift
+const BORDER_COLOR: u32 = 0x333333; // Subtle structural border
+const ACCENT: u32 = 0x4c8ef8; // Primary blue accent
+const ACCENT_DIM: u32 = 0x3b74d7; // Dimmer accent for indicators
+const TEXT_PRIMARY: u32 = 0xc5c5c5; // Main readable text
 const TEXT_SECONDARY: u32 = 0x7d868f; // Secondary / meta text
-const TEXT_MUTED: u32 = 0x616870;     // Muted labels
-const SUCCESS_COLOR: u32 = 0x56b16c;  // Green
-const WARNING_COLOR: u32 = 0xc8a459;  // Amber
-const DANGER_COLOR: u32 = 0xe06c75;   // Red
+const TEXT_MUTED: u32 = 0x616870; // Muted labels
+const SUCCESS_COLOR: u32 = 0x56b16c; // Green
+const WARNING_COLOR: u32 = 0xc8a459; // Amber
+const DANGER_COLOR: u32 = 0xe06c75; // Red
 const BG_ACCENT_SUBTLE: u32 = 0x1e2b42; // Active item tinted bg
-const BG_STATUSBAR: u32 = 0x111111;   // Status bar
+const BG_STATUSBAR: u32 = 0x111111; // Status bar
 
 /// Main application state
 pub struct AppState {
@@ -297,15 +297,13 @@ impl AppState {
         let rule_pattern_input = cx.new(|cx| InputState::new(window, cx).placeholder("google.com"));
         let node_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search nodes..."));
-        let node_tag_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Add tag..."));
+        let node_tag_input = cx.new(|cx| InputState::new(window, cx).placeholder("Add tag..."));
         let node_uri_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("vless://... or vmess://... or ss://... or trojan://...")
         });
-        let node_rename_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("New node name")
-        });
+        let node_rename_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("New node name"));
         let log_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter logs..."));
 
@@ -379,6 +377,9 @@ impl AppState {
             log_filter_input,
         };
         state.start_auto_refresh(cx);
+        if persisted.auto_connect && persisted.active_node.is_some() {
+            state.auto_connect_on_startup(cx, persisted.tun_was_enabled);
+        }
         state
     }
 
@@ -402,7 +403,13 @@ impl AppState {
             return;
         }
 
-        if !self.nodes.is_empty() && self.selected_node.is_none() {
+        if self.nodes.is_empty() {
+            self.proxy_status = "No nodes available. Please add a node first.".to_string();
+            cx.notify();
+            return;
+        }
+
+        if self.selected_node.is_none() {
             self.proxy_status = "Please select a node first".to_string();
             cx.notify();
             return;
@@ -778,7 +785,8 @@ impl AppState {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
-                        if let Some(existing) = this.subscriptions.iter_mut().find(|s| s.url == url) {
+                        if let Some(existing) = this.subscriptions.iter_mut().find(|s| s.url == url)
+                        {
                             existing.last_updated = Some(now);
                         } else {
                             this.subscriptions.push(Subscription {
@@ -1436,6 +1444,8 @@ impl AppState {
             active_node: self.selected_node,
             subscriptions: self.subscriptions.clone(),
             rules: self.rules.clone(),
+            auto_connect: self.proxy_running,
+            tun_was_enabled: self.tun_enabled,
         };
 
         if let Err(err) = save_gui_state(&config) {
@@ -1491,16 +1501,17 @@ impl AppState {
                 if attempt > 0 {
                     handle
                         .spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_secs(
-                                2u64.pow(attempt),
-                            ))
-                            .await;
+                            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt)))
+                                .await;
                         })
                         .await
                         .ok();
                 }
                 let sub_clone = sub.clone();
-                match handle.spawn(async move { fetch_subscription(&sub_clone).await }).await {
+                match handle
+                    .spawn(async move { fetch_subscription(&sub_clone).await })
+                    .await
+                {
                     Ok(Ok(mut new_nodes)) => {
                         weak.update(cx, |this: &mut AppState, cx| {
                             normalize_node_names(&mut new_nodes);
@@ -1519,17 +1530,14 @@ impl AppState {
                                 .map(|n| n.name.clone());
 
                             // Remove stale nodes from this subscription
-                            this.nodes.retain(|n| {
-                                n.extra.get("sub_url").map_or(true, |u| u != &url)
-                            });
+                            this.nodes.retain(|n| n.extra.get("sub_url") != Some(&url));
 
                             let count = new_nodes.len();
                             this.nodes.extend(new_nodes);
 
                             // Restore selection/active by name
                             if let Some(name) = selected_name {
-                                this.selected_node =
-                                    this.nodes.iter().position(|n| n.name == name);
+                                this.selected_node = this.nodes.iter().position(|n| n.name == name);
                             }
                             if let Some(name) = active_name {
                                 this.active_proxy_node =
@@ -1577,8 +1585,7 @@ impl AppState {
                     .map(|s| s.name.clone())
                     .unwrap_or_else(|| "subscription".to_string());
                 this.refreshing_subscriptions.remove(&sub_index);
-                this.import_status =
-                    format!("⚠ Refresh failed for '{}': {}", name, last_err);
+                this.import_status = format!("⚠ Refresh failed for '{}': {}", name, last_err);
                 cx.notify();
             })
             .ok();
@@ -1616,6 +1623,58 @@ impl AppState {
 
     /// Start the periodic auto-refresh background task.
     /// Called once at startup; checks for stale subscriptions every 30 minutes.
+    fn auto_connect_on_startup(&mut self, cx: &mut Context<Self>, restore_tun: bool) {
+        let handle = self.tokio_handle.clone();
+        cx.spawn(async move |weak, cx| {
+            // Short delay to let the UI fully initialize before connecting.
+            handle
+                .spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                })
+                .await
+                .ok();
+
+            let proxy_started = weak
+                .update(cx, |this: &mut AppState, cx| {
+                    tracing::info!("Auto-reconnecting to last active node...");
+                    this.start_proxy(cx);
+                    true
+                })
+                .unwrap_or(false);
+
+            if !restore_tun || !proxy_started {
+                return;
+            }
+
+            // Wait for proxy to finish starting before re-enabling TUN.
+            for _ in 0..20 {
+                handle
+                    .spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    })
+                    .await
+                    .ok();
+
+                let tun_started = weak
+                    .update(cx, |this: &mut AppState, cx| {
+                        if this.tun_enabled || !this.proxy_running {
+                            false
+                        } else {
+                            tracing::info!("Restoring TUN mode after auto-reconnect...");
+                            this.start_tun(cx);
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if tun_started {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn start_auto_refresh(&mut self, cx: &mut Context<Self>) {
         let handle = self.tokio_handle.clone();
         cx.spawn(async move |weak, cx| {
@@ -1714,25 +1773,37 @@ impl AppState {
     }
 
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active_node_info = self.active_proxy_node.and_then(|i| self.nodes.get(i)).map(|n| {
-            let latency = n.latency_ms.map(|ms| format!("{}ms", ms)).unwrap_or_default();
-            (n.name.clone(), latency)
-        });
+        let active_node_info = self
+            .active_proxy_node
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| {
+                let latency = n
+                    .latency_ms
+                    .map(|ms| format!("{}ms", ms))
+                    .unwrap_or_default();
+                (n.name.clone(), latency)
+            });
 
         let proxy_running = self.proxy_running;
 
         let has_custom_rules = !self.rules.is_empty();
         let mode_label = match self.proxy_mode {
             ProxyMode::Global => "Global",
-            ProxyMode::Rule => if has_custom_rules { "Rule" } else { "Auto" },
+            ProxyMode::Rule => {
+                if has_custom_rules {
+                    "Rule"
+                } else {
+                    "Auto"
+                }
+            }
             ProxyMode::Direct => "Direct",
         };
 
         let (mode_bg, mode_fg) = match self.proxy_mode {
-            ProxyMode::Global => (rgb(ACCENT),       rgb(0xffffffu32)),
+            ProxyMode::Global => (rgb(ACCENT), rgb(0xffffffu32)),
             ProxyMode::Rule if has_custom_rules => (rgb(0x2d4a22u32), rgb(SUCCESS_COLOR)),
-            ProxyMode::Rule   => (rgb(0x2a3a3au32),  rgb(0x7ecee8u32)), // teal = built-in rules
-            ProxyMode::Direct => (rgb(0x3a2a1au32),  rgb(WARNING_COLOR)),
+            ProxyMode::Rule => (rgb(0x2a3a3au32), rgb(0x7ecee8u32)), // teal = built-in rules
+            ProxyMode::Direct => (rgb(0x3a2a1au32), rgb(WARNING_COLOR)),
         };
 
         TitleBar::new()
@@ -1778,13 +1849,13 @@ impl AppState {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.cycle_proxy_mode(cx);
                             }))
-                            .child(
-                                div()
-                                    .w(px(5.0))
-                                    .h(px(5.0))
-                                    .rounded_full()
-                                    .bg(if proxy_running { rgb(SUCCESS_COLOR) } else { rgb(TEXT_MUTED) }),
-                            )
+                            .child(div().w(px(5.0)).h(px(5.0)).rounded_full().bg(
+                                if proxy_running {
+                                    rgb(SUCCESS_COLOR)
+                                } else {
+                                    rgb(TEXT_MUTED)
+                                },
+                            ))
                             .child(
                                 div()
                                     .text_xs()
@@ -1800,12 +1871,7 @@ impl AppState {
                             .flex_row()
                             .items_center()
                             .gap_1p5()
-                            .child(
-                                div()
-                                    .w(px(1.0))
-                                    .h(px(12.0))
-                                    .bg(rgb(BORDER_COLOR)),
-                            )
+                            .child(div().w(px(1.0)).h(px(12.0)).bg(rgb(BORDER_COLOR)))
                             .child(
                                 div()
                                     .text_xs()
@@ -1815,10 +1881,7 @@ impl AppState {
                             )
                             .when(!latency.is_empty(), |this| {
                                 this.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(rgb(TEXT_MUTED))
-                                        .child(latency),
+                                    div().text_xs().text_color(rgb(TEXT_MUTED)).child(latency),
                                 )
                             })
                     })),
@@ -1855,13 +1918,7 @@ impl AppState {
                     .flex_row()
                     .items_center()
                     .gap_1p5()
-                    .child(
-                        div()
-                            .w(px(7.0))
-                            .h(px(7.0))
-                            .rounded_full()
-                            .bg(dot_color),
-                    )
+                    .child(div().w(px(7.0)).h(px(7.0)).rounded_full().bg(dot_color))
                     .child(
                         div()
                             .text_xs()
@@ -1881,18 +1938,8 @@ impl AppState {
                             .text_color(rgb(TEXT_MUTED))
                             .child(format!("Mode: {}", mode_label)),
                     )
-                    .child(
-                        div()
-                            .w(px(1.0))
-                            .h(px(10.0))
-                            .bg(rgb(BORDER_COLOR)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
-                            .child("v0.1.0"),
-                    ),
+                    .child(div().w(px(1.0)).h(px(10.0)).bg(rgb(BORDER_COLOR)))
+                    .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child("v0.1.0")),
             )
     }
 }
@@ -1911,6 +1958,26 @@ impl AppState {
             .bg(rgb(BG_SIDEBAR))
             .border_r_1()
             .border_color(rgb(BORDER_COLOR))
+            // Logo / branding strip
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h(px(40.0))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_COLOR))
+                    .child(img("logo-icon.svg").w(px(24.0)).h(px(24.0)))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(TEXT_PRIMARY))
+                            .child("Vex"),
+                    ),
+            )
             // Nav section
             .child(
                 div()
@@ -1918,29 +1985,67 @@ impl AppState {
                     .flex_col()
                     .pt_2()
                     .pb_1()
-                    .child(self.nav_item("Dashboard", "Ctrl+1", IconName::LayoutDashboard, ActiveView::Home, &active, cx))
-                    .child(self.nav_item("Nodes",     "Ctrl+2", IconName::Globe,            ActiveView::Nodes, &active, cx))
-                    .child(self.nav_item("Config",    "Ctrl+3", IconName::Settings2,        ActiveView::Config, &active, cx))
-                    .child(self.nav_item("Rules",     "Ctrl+4", IconName::Map,              ActiveView::Rules, &active, cx)),
+                    .child(self.nav_item(
+                        "Dashboard",
+                        "Ctrl+1",
+                        IconName::LayoutDashboard,
+                        ActiveView::Home,
+                        &active,
+                        cx,
+                    ))
+                    .child(self.nav_item(
+                        "Nodes",
+                        "Ctrl+2",
+                        IconName::Globe,
+                        ActiveView::Nodes,
+                        &active,
+                        cx,
+                    ))
+                    .child(self.nav_item(
+                        "Config",
+                        "Ctrl+3",
+                        IconName::Settings2,
+                        ActiveView::Config,
+                        &active,
+                        cx,
+                    ))
+                    .child(self.nav_item(
+                        "Rules",
+                        "Ctrl+4",
+                        IconName::Map,
+                        ActiveView::Rules,
+                        &active,
+                        cx,
+                    )),
             )
             // Separator + secondary section
             .child(
                 div()
                     .px_3()
                     .py_1()
-                    .child(
-                        div()
-                            .border_b_1()
-                            .border_color(rgb(BORDER_COLOR)),
-                    ),
+                    .child(div().border_b_1().border_color(rgb(BORDER_COLOR))),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .py_1()
-                    .child(self.nav_item("Settings", "Ctrl+6", IconName::Settings,       ActiveView::Settings, &active, cx))
-                    .child(self.nav_item("Logs",     "Ctrl+5", IconName::SquareTerminal, ActiveView::Logs, &active, cx)),
+                    .child(self.nav_item(
+                        "Settings",
+                        "Ctrl+6",
+                        IconName::Settings,
+                        ActiveView::Settings,
+                        &active,
+                        cx,
+                    ))
+                    .child(self.nav_item(
+                        "Logs",
+                        "Ctrl+5",
+                        IconName::SquareTerminal,
+                        ActiveView::Logs,
+                        &active,
+                        cx,
+                    )),
             )
     }
 
@@ -1997,7 +2102,11 @@ impl AppState {
             .child(
                 div()
                     .text_xs()
-                    .font_weight(if is_active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                    .font_weight(if is_active {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .text_color(text_color)
                     .child(label.to_string()),
             )
@@ -2094,8 +2203,7 @@ impl AppState {
                 let dt = now.duration_since(prev_time).as_secs_f64();
                 if dt >= 0.5 {
                     self.upload_speed_bps = (bytes_up.saturating_sub(prev_up)) as f64 / dt;
-                    self.download_speed_bps =
-                        (bytes_down.saturating_sub(prev_down)) as f64 / dt;
+                    self.download_speed_bps = (bytes_down.saturating_sub(prev_down)) as f64 / dt;
                     self.prev_bandwidth_snapshot = Some((bytes_up, bytes_down, now));
                     // Push to history ring buffers
                     self.upload_history.push_back(self.upload_speed_bps);
@@ -2541,10 +2649,7 @@ impl AppState {
     }
 
     fn card(&self) -> Div {
-        div()
-            .p_3()
-            .rounded(px(8.0))
-            .bg(rgb(BG_CARD))
+        div().p_3().rounded(px(8.0)).bg(rgb(BG_CARD))
     }
 
     /// Section title inside a card — semibold, muted, no border (Zed panel label style).
@@ -2581,16 +2686,13 @@ impl AppState {
     }
 
     fn page_header(&self, title: &str) -> Div {
-        div()
-            .pb_1()
-            .mb_1()
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(TEXT_PRIMARY))
-                    .child(title.to_string()),
-            )
+        div().pb_1().mb_1().child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(TEXT_PRIMARY))
+                .child(title.to_string()),
+        )
     }
 }
 
@@ -2622,9 +2724,7 @@ impl AppState {
         };
         // Stable order: SS, VMess, VLESS, Trojan, TUIC, Hy2
         let protocol_order = ["ss", "vmess", "vless", "trojan", "tuic", "hy2"];
-        present_protocols.sort_by_key(|p| {
-            protocol_order.iter().position(|o| o == p).unwrap_or(99)
-        });
+        present_protocols.sort_by_key(|p| protocol_order.iter().position(|o| o == p).unwrap_or(99));
 
         let proto_filter = self.protocol_filter;
         let tag_filter = self.tag_filter.clone();
@@ -2648,7 +2748,9 @@ impl AppState {
                     || protocol_short_name(&n.protocol)
                         .to_lowercase()
                         .contains(&filter_text)
-                    || n.tags.iter().any(|t| t.to_lowercase().contains(&filter_text));
+                    || n.tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&filter_text));
                 proto_match && tag_match && text_match
             })
             .collect();
@@ -3043,7 +3145,13 @@ impl AppState {
         let latency = node
             .latency_ms
             .map(|ms| format!("{}ms", ms))
-            .unwrap_or_else(|| if is_failed { "err".to_string() } else { "---".to_string() });
+            .unwrap_or_else(|| {
+                if is_failed {
+                    "err".to_string()
+                } else {
+                    "---".to_string()
+                }
+            });
         let latency_color = node
             .latency_ms
             .map(|ms| {
@@ -3104,8 +3212,16 @@ impl AppState {
             .child({
                 // Selection checkbox
                 let is_checked = self.selected_node_indices.contains(&index);
-                let checkbox_bg = if is_checked { rgb(ACCENT) } else { rgba(0x00000000u32) };
-                let checkbox_border = if is_checked { rgb(ACCENT) } else { rgb(BORDER_COLOR) };
+                let checkbox_bg = if is_checked {
+                    rgb(ACCENT)
+                } else {
+                    rgba(0x00000000u32)
+                };
+                let checkbox_border = if is_checked {
+                    rgb(ACCENT)
+                } else {
+                    rgb(BORDER_COLOR)
+                };
                 div()
                     .id(SharedString::from(format!("node-check-{}", index)))
                     .w(px(16.0))
@@ -3231,7 +3347,8 @@ impl AppState {
                 },
             )
             .child(
-                Button::new(("delete-node", index)).xsmall()
+                Button::new(("delete-node", index))
+                    .xsmall()
                     .label("×".to_string())
                     .tooltip("Remove this node")
                     .ghost()
@@ -3252,19 +3369,18 @@ impl AppState {
         let url = self.subscriptions[index].url.clone();
         self.subscriptions.remove(index);
         // Remove nodes tagged with this subscription URL
-        self.nodes
-            .retain(|n| n.extra.get("sub_url").map_or(true, |u| u != &url));
+        self.nodes.retain(|n| n.extra.get("sub_url") != Some(&url));
         // Restore indices after removal
         let len = self.nodes.len();
-        if let Some(i) = self.selected_node {
-            if i >= len {
-                self.selected_node = if len > 0 { Some(len - 1) } else { None };
-            }
+        if let Some(i) = self.selected_node
+            && i >= len
+        {
+            self.selected_node = if len > 0 { Some(len - 1) } else { None };
         }
-        if let Some(i) = self.active_proxy_node {
-            if i >= len {
-                self.active_proxy_node = None;
-            }
+        if let Some(i) = self.active_proxy_node
+            && i >= len
+        {
+            self.active_proxy_node = None;
         }
         self.persist_gui_state();
         cx.notify();
@@ -3308,16 +3424,14 @@ impl AppState {
 
     fn render_subscription_list(&mut self, cx: &mut Context<Self>) -> Div {
         let sub_count = self.subscriptions.len();
-        let card = self
-            .card()
-            .child(self.card_title(&format!(
-                "Saved Subscriptions{}",
-                if sub_count > 0 {
-                    format!(" — {}", sub_count)
-                } else {
-                    String::new()
-                }
-            )));
+        let card = self.card().child(self.card_title(&format!(
+            "Saved Subscriptions{}",
+            if sub_count > 0 {
+                format!(" — {}", sub_count)
+            } else {
+                String::new()
+            }
+        )));
 
         if sub_count == 0 {
             return card.child(
@@ -3345,7 +3459,7 @@ impl AppState {
             let node_count = self
                 .nodes
                 .iter()
-                .filter(|n| n.extra.get("sub_url").map_or(false, |u| u == &sub.url))
+                .filter(|n| n.extra.get("sub_url") == Some(&sub.url))
                 .count();
             let is_refreshing = self.refreshing_subscriptions.contains(&i);
 
@@ -3403,16 +3517,13 @@ impl AppState {
                                         .overflow_x_hidden()
                                         .child(url_display),
                                 )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(rgb(TEXT_MUTED))
-                                        .child(if is_refreshing {
-                                            format!("· {}", "refreshing…")
-                                        } else {
-                                            format!("· {}", last_updated)
-                                        }),
-                                ),
+                                .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child(
+                                    if is_refreshing {
+                                        format!("· {}", "refreshing…")
+                                    } else {
+                                        format!("· {}", last_updated)
+                                    },
+                                )),
                         ),
                 )
                 // Right: action buttons
@@ -3423,7 +3534,8 @@ impl AppState {
                         .gap_1()
                         .items_center()
                         .child(
-                            Button::new(("interval-btn", i)).xsmall()
+                            Button::new(("interval-btn", i))
+                                .xsmall()
                                 .label(format!("Auto: {}", interval_label))
                                 .tooltip("Click to cycle: Off → 1h → 2h → 6h → 12h → 24h → Off")
                                 .ghost()
@@ -3432,7 +3544,8 @@ impl AppState {
                                 })),
                         )
                         .child(
-                            Button::new(("refresh-sub-btn", i)).xsmall()
+                            Button::new(("refresh-sub-btn", i))
+                                .xsmall()
                                 .label("Refresh".to_string())
                                 .tooltip("Fetch new nodes from this subscription now")
                                 .ghost()
@@ -3442,7 +3555,8 @@ impl AppState {
                                 })),
                         )
                         .child(
-                            Button::new(("delete-sub-btn", i)).xsmall()
+                            Button::new(("delete-sub-btn", i))
+                                .xsmall()
                                 .label("×".to_string())
                                 .tooltip("Remove this subscription and its nodes")
                                 .ghost()
@@ -3645,7 +3759,6 @@ impl AppState {
                     ),
             )
     }
-
 }
 
 // === Rules View ===
@@ -3772,85 +3885,85 @@ impl AppState {
                 pattern: "CN".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "cn".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "baidu.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "qq.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "taobao.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "aliyun.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "jd.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "163.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "bilibili.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "domain-suffix".into(),
                 pattern: "zhihu.com".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "10.0.0.0/8".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "172.16.0.0/12".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "ip-cidr".into(),
                 pattern: "192.168.0.0/16".into(),
                 target: "direct".into(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "match".into(),
                 pattern: "*".into(),
                 target: "proxy".into(),
                 enabled: true,
-        },
+            },
         ];
         self.rules = china_rules;
         self.rules_status = if self.proxy_running && self.proxy_mode == ProxyMode::Rule {
@@ -3938,16 +4051,20 @@ impl AppState {
                             .flex_row()
                             .gap_2()
                             .child(
-                                Button::new("load-china-rules").xsmall()
+                                Button::new("load-china-rules")
+                                    .xsmall()
                                     .label("Load China Direct".to_string())
-                                    .tooltip("Load built-in rules to bypass proxy for Chinese sites")
+                                    .tooltip(
+                                        "Load built-in rules to bypass proxy for Chinese sites",
+                                    )
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.load_china_rules(cx);
                                     })),
                             )
                             .child(
-                                Button::new("clear-rules").xsmall()
+                                Button::new("clear-rules")
+                                    .xsmall()
                                     .label("Clear All".to_string())
                                     .tooltip("Remove all routing rules")
                                     .ghost()
@@ -3969,7 +4086,12 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("Type"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_SECONDARY))
+                                    .child("Type"),
+                            )
                             .child({
                                 let t = cur_type.clone();
                                 let types: &[(&str, &str)] = &[
@@ -3983,8 +4105,12 @@ impl AppState {
                                 let mut row = div().flex().flex_row().gap_1().flex_wrap();
                                 for &(val, label) in types {
                                     let active = t == val;
-                                    row = row.child(
-                                        Button::new(SharedString::from(format!("rule-type-{}", val)))
+                                    row =
+                                        row.child(
+                                            Button::new(SharedString::from(format!(
+                                                "rule-type-{}",
+                                                val
+                                            )))
                                             .xsmall()
                                             .label(label.to_string())
                                             .when(active, |b| b.primary())
@@ -3993,7 +4119,7 @@ impl AppState {
                                                 this.rule_type_sel = val.to_string();
                                                 cx.notify();
                                             })),
-                                    );
+                                        );
                                 }
                                 row
                             }),
@@ -4012,10 +4138,23 @@ impl AppState {
                                     .flex()
                                     .flex_col()
                                     .gap_1()
-                                    .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("Pattern"))
-                                    .child(gpui_component::input::Input::new(&rule_pattern_input).w_full())
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child("Pattern"),
+                                    )
+                                    .child(
+                                        gpui_component::input::Input::new(&rule_pattern_input)
+                                            .w_full(),
+                                    )
                                     .when(!pattern_hint.is_empty(), |d| {
-                                        d.child(div().text_xs().text_color(rgb(TEXT_MUTED)).child(pattern_hint))
+                                        d.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(TEXT_MUTED))
+                                                .child(pattern_hint),
+                                        )
                                     }),
                             )
                             .child(
@@ -4023,7 +4162,12 @@ impl AppState {
                                     .flex()
                                     .flex_col()
                                     .gap_1()
-                                    .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child("Target"))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child("Target"),
+                                    )
                                     .child(
                                         div()
                                             .flex()
@@ -4031,7 +4175,8 @@ impl AppState {
                                             .gap_1()
                                             .child({
                                                 let active = cur_target == "direct";
-                                                Button::new("target-direct").xsmall()
+                                                Button::new("target-direct")
+                                                    .xsmall()
                                                     .label("Direct".to_string())
                                                     .tooltip("直连，不经过代理")
                                                     .when(active, |b| b.primary())
@@ -4043,7 +4188,8 @@ impl AppState {
                                             })
                                             .child({
                                                 let active = cur_target == "proxy";
-                                                Button::new("target-proxy").xsmall()
+                                                Button::new("target-proxy")
+                                                    .xsmall()
                                                     .label("Proxy".to_string())
                                                     .tooltip("走代理节点")
                                                     .when(active, |b| b.primary())
@@ -4055,7 +4201,8 @@ impl AppState {
                                             })
                                             .child({
                                                 let active = cur_target == "reject";
-                                                Button::new("target-reject").xsmall()
+                                                Button::new("target-reject")
+                                                    .xsmall()
                                                     .label("Block".to_string())
                                                     .tooltip("拦截，拒绝连接")
                                                     .when(active, |b| b.primary())
@@ -4068,7 +4215,8 @@ impl AppState {
                                     ),
                             )
                             .child(
-                                Button::new("add-rule-btn").xsmall()
+                                Button::new("add-rule-btn")
+                                    .xsmall()
                                     .label(if self.editing_rule_index.is_some() {
                                         "Save".to_string()
                                     } else {
@@ -4086,7 +4234,8 @@ impl AppState {
                             )
                             .children(if self.editing_rule_index.is_some() {
                                 Some(
-                                    Button::new("cancel-edit-btn").xsmall()
+                                    Button::new("cancel-edit-btn")
+                                        .xsmall()
                                         .label("Cancel".to_string())
                                         .tooltip("Discard changes and stop editing")
                                         .ghost()
@@ -4187,9 +4336,17 @@ impl AppState {
         };
         let pattern = rule.pattern.clone();
         let target = rule.target.clone();
-        let text_color = if is_enabled { rgb(TEXT_PRIMARY) } else { rgb(TEXT_MUTED) };
+        let text_color = if is_enabled {
+            rgb(TEXT_PRIMARY)
+        } else {
+            rgb(TEXT_MUTED)
+        };
         let toggle_label = if is_enabled { "On" } else { "Off" };
-        let toggle_tooltip = if is_enabled { "Disable rule" } else { "Enable rule" };
+        let toggle_tooltip = if is_enabled {
+            "Disable rule"
+        } else {
+            "Enable rule"
+        };
 
         // Enable/disable indicator: left border color
         let left_bar_color = if is_enabled { ACCENT } else { BORDER_COLOR };
@@ -4254,7 +4411,8 @@ impl AppState {
                     .gap_0p5()
                     .items_center()
                     .child(
-                        Button::new(("rule-toggle", index)).xsmall()
+                        Button::new(("rule-toggle", index))
+                            .xsmall()
                             .label(toggle_label.to_string())
                             .tooltip(toggle_tooltip)
                             .ghost()
@@ -4270,7 +4428,8 @@ impl AppState {
                             })),
                     )
                     .child(
-                        Button::new(("rule-up", index)).xsmall()
+                        Button::new(("rule-up", index))
+                            .xsmall()
                             .label("↑".to_string())
                             .tooltip("Move rule up (higher priority)")
                             .ghost()
@@ -4279,7 +4438,8 @@ impl AppState {
                             })),
                     )
                     .child(
-                        Button::new(("rule-down", index)).xsmall()
+                        Button::new(("rule-down", index))
+                            .xsmall()
                             .label("↓".to_string())
                             .tooltip("Move rule down (lower priority)")
                             .ghost()
@@ -4288,7 +4448,8 @@ impl AppState {
                             })),
                     )
                     .child(
-                        Button::new(("rule-edit", index)).xsmall()
+                        Button::new(("rule-edit", index))
+                            .xsmall()
                             .label("Edit".to_string())
                             .tooltip("Edit this rule")
                             .ghost()
@@ -4297,7 +4458,8 @@ impl AppState {
                             })),
                     )
                     .child(
-                        Button::new(("rule-del", index)).xsmall()
+                        Button::new(("rule-del", index))
+                            .xsmall()
                             .label("×".to_string())
                             .tooltip("Delete this rule")
                             .ghost()
@@ -4355,7 +4517,8 @@ impl AppState {
             let mut row = div().flex().flex_row().gap_1();
             for &(label, level, color) in levels {
                 let is_active = current_level == level;
-                let btn = Button::new(SharedString::from(format!("log-lvl-{}", label))).xsmall()
+                let btn = Button::new(SharedString::from(format!("log-lvl-{}", label)))
+                    .xsmall()
                     .label(label.to_string())
                     .when(is_active, |b| b.primary())
                     .when(!is_active, |b| b.ghost())
@@ -4371,93 +4534,105 @@ impl AppState {
             row
         };
 
-        let mut content = div().flex().flex_col().gap_3().child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .pb_3()
-                .mb_1()
-                .border_b_1()
-                .border_color(rgb(BORDER_COLOR))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_3()
-                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child("Logs"))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(TEXT_MUTED))
-                                .px_2()
-                                .py_0p5()
-                                .rounded(px(4.0))
-                                .bg(rgb(BG_ACCENT_SUBTLE))
-                                .child(if log_filter.is_empty() && filtered_count == total_count {
-                                    format!("{}", total_count)
-                                } else {
-                                    format!("{}/{}", filtered_count, total_count)
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
-                            Button::new("refresh-logs").xsmall()
-                                .label("Refresh".to_string())
-                                .tooltip("Refresh log display")
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .pb_3()
+                    .mb_1()
+                    .border_b_1()
+                    .border_color(rgb(BORDER_COLOR))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Logs"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(TEXT_MUTED))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(4.0))
+                                    .bg(rgb(BG_ACCENT_SUBTLE))
+                                    .child(
+                                        if log_filter.is_empty() && filtered_count == total_count {
+                                            format!("{}", total_count)
+                                        } else {
+                                            format!("{}/{}", filtered_count, total_count)
+                                        },
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("refresh-logs")
+                                    .xsmall()
+                                    .label("Refresh".to_string())
+                                    .tooltip("Refresh log display")
+                                    .ghost()
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("clear-logs")
+                                    .xsmall()
+                                    .label("Clear".to_string())
+                                    .tooltip("Clear all log entries")
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Ok(mut buf) = this.log_buffer.lock() {
+                                            buf.clear();
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            // Level filter chips + text search row
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(level_chips)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(gpui_component::input::Input::new(&log_filter_input).w_full()),
+                    )
+                    .when(!self.log_filter.is_empty(), |d| {
+                        d.child(
+                            Button::new("clear-log-filter")
+                                .xsmall()
+                                .label("Clear".to_string())
                                 .ghost()
-                                .on_click(cx.listener(|_this, _, _, cx| {
-                                    cx.notify();
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.clear_log_filter(window, cx);
                                 })),
                         )
-                        .child(
-                            Button::new("clear-logs").xsmall()
-                                .label("Clear".to_string())
-                                .tooltip("Clear all log entries")
-                                .ghost()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Ok(mut buf) = this.log_buffer.lock() {
-                                        buf.clear();
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
-                ),
-        )
-        // Level filter chips + text search row
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_3()
-                .child(level_chips)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            gpui_component::input::Input::new(&log_filter_input).w_full(),
-                        ),
-                )
-                .when(!self.log_filter.is_empty(), |d| {
-                    d.child(
-                        Button::new("clear-log-filter").xsmall()
-                            .label("Clear".to_string())
-                            .ghost()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.clear_log_filter(window, cx);
-                            })),
-                    )
-                }),
-        );
+                    }),
+            );
 
         if filtered.is_empty() {
             content = content.child(
@@ -4468,26 +4643,20 @@ impl AppState {
                         .items_center()
                         .py_8()
                         .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(TEXT_SECONDARY))
-                                .child(if total_count == 0 {
-                                    "No log entries yet"
-                                } else {
-                                    "No entries match the filter"
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(TEXT_MUTED))
-                                .child(if total_count == 0 {
-                                    "Logs will appear here as the proxy operates"
-                                } else {
-                                    "Try a different level or clear the search filter"
-                                }),
-                        ),
+                        .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child(
+                            if total_count == 0 {
+                                "No log entries yet"
+                            } else {
+                                "No entries match the filter"
+                            },
+                        ))
+                        .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child(
+                            if total_count == 0 {
+                                "Logs will appear here as the proxy operates"
+                            } else {
+                                "Try a different level or clear the search filter"
+                            },
+                        )),
                 ),
             );
         } else {
@@ -4504,8 +4673,8 @@ impl AppState {
             for (log_idx, entry) in filtered.iter().take(500).enumerate() {
                 let (level_label, level_color, msg_color) = match entry.level {
                     tracing::Level::ERROR => ("ERR", DANGER_COLOR, DANGER_COLOR),
-                    tracing::Level::WARN  => ("WRN", WARNING_COLOR, WARNING_COLOR),
-                    tracing::Level::INFO  => ("INF", SUCCESS_COLOR, TEXT_PRIMARY),
+                    tracing::Level::WARN => ("WRN", WARNING_COLOR, WARNING_COLOR),
+                    tracing::Level::INFO => ("INF", SUCCESS_COLOR, TEXT_PRIMARY),
                     tracing::Level::DEBUG => ("DBG", TEXT_MUTED, TEXT_SECONDARY),
                     tracing::Level::TRACE => ("TRC", TEXT_MUTED, TEXT_MUTED),
                 };
@@ -4520,9 +4689,9 @@ impl AppState {
 
                 // Alternate row bg for readability
                 let row_bg = if log_idx % 2 == 0 {
-                    rgba(0x00000000u32)  // transparent
+                    rgba(0x00000000u32) // transparent
                 } else {
-                    rgba(0xffffff04u32)  // very subtle stripe
+                    rgba(0xffffff04u32) // very subtle stripe
                 };
 
                 list = list.child(
@@ -4837,7 +5006,12 @@ impl AppState {
             )
     }
 
-    fn render_selected_node_details(&mut self, node: &Node, index: usize, cx: &mut Context<Self>) -> Div {
+    fn render_selected_node_details(
+        &mut self,
+        node: &Node,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let status = if self.proxy_running && self.active_proxy_node == Some(index) {
             "Active"
         } else if self.selected_node == Some(index) {
@@ -4857,19 +5031,25 @@ impl AppState {
                 }
             });
 
-        let latency_color = node.latency_ms.map(|ms| {
-            if ms < 100 {
-                SUCCESS_COLOR
-            } else if ms < 300 {
-                WARNING_COLOR
-            } else {
-                DANGER_COLOR
-            }
-        }).unwrap_or(TEXT_MUTED);
+        let latency_color = node
+            .latency_ms
+            .map(|ms| {
+                if ms < 100 {
+                    SUCCESS_COLOR
+                } else if ms < 300 {
+                    WARNING_COLOR
+                } else {
+                    DANGER_COLOR
+                }
+            })
+            .unwrap_or(TEXT_MUTED);
 
         // Subscription source (from sub_url tag)
         let sub_source = node.extra.get("sub_url").and_then(|url| {
-            self.subscriptions.iter().find(|s| &s.url == url).map(|s| s.name.clone())
+            self.subscriptions
+                .iter()
+                .find(|s| &s.url == url)
+                .map(|s| s.name.clone())
         });
 
         // UDP support
@@ -4930,8 +5110,16 @@ impl AppState {
                                     .px_1p5()
                                     .py_0p5()
                                     .rounded(px(3.0))
-                                    .text_color(if is_active { rgb(SUCCESS_COLOR) } else { rgb(TEXT_MUTED) })
-                                    .bg(if is_active { rgb(0x1a2e1e) } else { rgb(BG_ACCENT_SUBTLE) })
+                                    .text_color(if is_active {
+                                        rgb(SUCCESS_COLOR)
+                                    } else {
+                                        rgb(TEXT_MUTED)
+                                    })
+                                    .bg(if is_active {
+                                        rgb(0x1a2e1e)
+                                    } else {
+                                        rgb(BG_ACCENT_SUBTLE)
+                                    })
                                     .child(status),
                             ),
                     )
@@ -4942,7 +5130,8 @@ impl AppState {
                             .gap_1()
                             .items_center()
                             .child(if is_active {
-                                Button::new("deactivate-btn").xsmall()
+                                Button::new("deactivate-btn")
+                                    .xsmall()
                                     .label("Disconnect".to_string())
                                     .tooltip("Stop proxy and deactivate this node")
                                     .danger()
@@ -4950,7 +5139,8 @@ impl AppState {
                                         this.stop_proxy(cx);
                                     }))
                             } else {
-                                Button::new("activate-btn").xsmall()
+                                Button::new("activate-btn")
+                                    .xsmall()
                                     .label("Connect".to_string())
                                     .tooltip("Connect through this node")
                                     .primary()
@@ -4960,7 +5150,8 @@ impl AppState {
                                     }))
                             })
                             .child(
-                                Button::new("test-lat-btn").xsmall()
+                                Button::new("test-lat-btn")
+                                    .xsmall()
                                     .label("Test".to_string())
                                     .tooltip("Test latency for this node")
                                     .ghost()
@@ -4970,7 +5161,8 @@ impl AppState {
                                     })),
                             )
                             .child(if is_editing {
-                                Button::new("rename-cancel-btn").xsmall()
+                                Button::new("rename-cancel-btn")
+                                    .xsmall()
                                     .label("Cancel".to_string())
                                     .tooltip("Cancel rename")
                                     .ghost()
@@ -4979,13 +5171,16 @@ impl AppState {
                                         cx.notify();
                                     }))
                             } else {
-                                Button::new("rename-btn").xsmall()
+                                Button::new("rename-btn")
+                                    .xsmall()
                                     .label("Rename".to_string())
                                     .tooltip("Rename this node")
                                     .ghost()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.editing_node_index = Some(index);
-                                        let current_name = this.nodes.get(index)
+                                        let current_name = this
+                                            .nodes
+                                            .get(index)
                                             .map(|n| n.name.clone())
                                             .unwrap_or_default();
                                         this.node_rename_input.update(cx, |state, cx| {
@@ -5004,17 +5199,19 @@ impl AppState {
                         .gap_2()
                         .items_center()
                         .child(
-                            div()
-                                .flex_1()
-                                .child(gpui_component::input::Input::new(&node_rename_input).w_full()),
+                            div().flex_1().child(
+                                gpui_component::input::Input::new(&node_rename_input).w_full(),
+                            ),
                         )
                         .child(
-                            Button::new("rename-confirm-btn").xsmall()
+                            Button::new("rename-confirm-btn")
+                                .xsmall()
                                 .label("Save".to_string())
                                 .tooltip("Confirm rename")
                                 .primary()
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    let new_name = this.node_rename_input.read(cx).value().trim().to_string();
+                                    let new_name =
+                                        this.node_rename_input.read(cx).value().trim().to_string();
                                     if !new_name.is_empty() {
                                         if let Some(n) = this.nodes.get_mut(index) {
                                             n.name = new_name;
@@ -5045,12 +5242,7 @@ impl AppState {
                             .py_1p5()
                             .border_b_1()
                             .border_color(rgb(BORDER_COLOR))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(TEXT_MUTED))
-                                    .child("Latency"),
-                            )
+                            .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child("Latency"))
                             .child(
                                 div()
                                     .text_xs()
@@ -5094,21 +5286,26 @@ impl AppState {
                                             .rounded(px(4.0))
                                             .bg(rgb(BG_ACCENT_SUBTLE))
                                             .child(
-                                                div().text_xs().text_color(rgb(TEXT_SECONDARY))
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(rgb(TEXT_SECONDARY))
                                                     .child(format!("#{}", tag)),
                                             )
                                             .child(
-                                                Button::new(SharedString::from(format!("del-tag-{}", tag_clone)))
-                                                    .xsmall()
-                                                    .label("×".to_string())
-                                                    .ghost()
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        if let Some(n) = this.nodes.get_mut(index) {
-                                                            n.tags.retain(|t| t != &tag_clone);
-                                                        }
-                                                        this.persist_gui_state();
-                                                        cx.notify();
-                                                    })),
+                                                Button::new(SharedString::from(format!(
+                                                    "del-tag-{}",
+                                                    tag_clone
+                                                )))
+                                                .xsmall()
+                                                .label("×".to_string())
+                                                .ghost()
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if let Some(n) = this.nodes.get_mut(index) {
+                                                        n.tags.retain(|t| t != &tag_clone);
+                                                    }
+                                                    this.persist_gui_state();
+                                                    cx.notify();
+                                                })),
                                             ),
                                     );
                                 }
@@ -5120,24 +5317,29 @@ impl AppState {
                                     .flex_row()
                                     .gap_1()
                                     .items_center()
+                                    .child(div().flex_1().min_w_0().child(
+                                        gpui_component::input::Input::new(&node_tag_input).w_full(),
+                                    ))
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(gpui_component::input::Input::new(&node_tag_input).w_full()),
-                                    )
-                                    .child(
-                                        Button::new("add-tag-btn").xsmall()
+                                        Button::new("add-tag-btn")
+                                            .xsmall()
                                             .label("Add".to_string())
                                             .tooltip("Add tag to this node")
                                             .ghost()
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                let tag = this.node_tag_input.read(cx).value().trim().to_string();
-                                                if tag.is_empty() { return; }
-                                                if let Some(n) = this.nodes.get_mut(index) {
-                                                    if !n.tags.contains(&tag) {
-                                                        n.tags.push(tag);
-                                                    }
+                                                let tag = this
+                                                    .node_tag_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .trim()
+                                                    .to_string();
+                                                if tag.is_empty() {
+                                                    return;
+                                                }
+                                                if let Some(n) = this.nodes.get_mut(index)
+                                                    && !n.tags.contains(&tag)
+                                                {
+                                                    n.tags.push(tag);
                                                 }
                                                 this.node_tag_input.update(cx, |s, cx| {
                                                     s.set_value("", window, cx);
@@ -5182,10 +5384,7 @@ fn render_proxy_steps(phase: u8) -> Div {
     };
     let step_line = |filled: bool| {
         let color = if filled { SUCCESS_COLOR } else { 0x2b2b2bu32 };
-        div()
-            .h(px(2.0))
-            .w(px(32.0))
-            .bg(rgb(color))
+        div().h(px(2.0)).w(px(32.0)).bg(rgb(color))
     };
     let step_label = |text: &str, active: bool, done: bool| {
         let color = if done {
@@ -5208,21 +5407,33 @@ fn render_proxy_steps(phase: u8) -> Div {
         .gap_1()
         // Step 1
         .child(
-            div().flex().flex_col().items_center().gap_0p5()
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_0p5()
                 .child(step_dot(phase >= 2, phase == 1))
                 .child(step_label("Start", phase == 1, phase >= 2)),
         )
         .child(step_line(phase >= 2))
         // Step 2
         .child(
-            div().flex().flex_col().items_center().gap_0p5()
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_0p5()
                 .child(step_dot(phase >= 3, phase == 2))
                 .child(step_label("Verify", phase == 2, phase >= 3)),
         )
         .child(step_line(phase >= 3))
         // Step 3
         .child(
-            div().flex().flex_col().items_center().gap_0p5()
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_0p5()
                 .child(step_dot(phase >= 3, false))
                 .child(step_label("Done", false, phase >= 3)),
         )
@@ -5320,24 +5531,14 @@ async fn verify_local_http_proxy(
     for attempt in 1..=2u32 {
         let probe_timeout = if attempt == 1 { first_timeout } else { timeout };
         let (r1, r2, r3) = tokio::join!(
-            verify_local_http_proxy_once(
-                listen_addr,
-                http_port,
-                probe_timeout,
-                "www.gstatic.com",
-            ),
+            verify_local_http_proxy_once(listen_addr, http_port, probe_timeout, "www.gstatic.com",),
             verify_local_http_proxy_once(
                 listen_addr,
                 http_port,
                 probe_timeout,
                 "cp.cloudflare.com",
             ),
-            verify_local_http_proxy_once(
-                listen_addr,
-                http_port,
-                probe_timeout,
-                "dns.google",
-            ),
+            verify_local_http_proxy_once(listen_addr, http_port, probe_timeout, "dns.google",),
         );
         match (r1, r2, r3) {
             // Any single success counts: proxy is reachable.
@@ -5420,11 +5621,7 @@ async fn verify_local_http_proxy_once(
     }
     // Accept "200" anywhere after the HTTP version — some proxies omit
     // the trailing space (e.g. "HTTP/1.1 200" without a reason phrase).
-    let code = status_line
-        .splitn(3, ' ')
-        .nth(1)
-        .unwrap_or_default()
-        .trim();
+    let code = status_line.split(' ').nth(1).unwrap_or_default().trim();
     if code != "200" {
         anyhow::bail!("tunnel establishment failed: {}", status_line);
     }
@@ -5507,22 +5704,21 @@ fn transport_summary(transport: Option<&TransportConfig>) -> String {
             };
 
             let mut parts = vec![mode.to_string()];
-            if let Some(tls) = &transport.tls {
-                if let Some(sni) = &tls.sni {
-                    parts.push(format!("SNI {sni}"));
-                }
+            if let Some(tls) = &transport.tls
+                && let Some(sni) = &tls.sni
+            {
+                parts.push(format!("SNI {sni}"));
             }
-            if let Some(ws) = &transport.ws {
-                if let Some(path) = &ws.path {
-                    if !path.is_empty() {
-                        parts.push(format!("Path {}", path));
-                    }
-                }
+            if let Some(ws) = &transport.ws
+                && let Some(path) = &ws.path
+                && !path.is_empty()
+            {
+                parts.push(format!("Path {}", path));
             }
-            if let Some(reality) = &transport.reality {
-                if let Some(sni) = &reality.sni {
-                    parts.push(format!("Server {}", sni));
-                }
+            if let Some(reality) = &transport.reality
+                && let Some(sni) = &reality.sni
+            {
+                parts.push(format!("Server {}", sni));
             }
             parts.join(" · ")
         }
@@ -5609,13 +5805,13 @@ mod tests {
                 pattern: "example.com".to_string(),
                 target: "reject".to_string(),
                 enabled: true,
-        },
+            },
             RoutingRule {
                 rule_type: "match".to_string(),
                 pattern: "*".to_string(),
                 target: "proxy".to_string(),
                 enabled: true,
-        },
+            },
         ];
 
         let router = Router::new(rule_mode_ruleset(&rules));

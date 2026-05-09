@@ -23,10 +23,10 @@ impl QuicConnectionState {
     /// Fast path: returns a live connection if cached, else `None`.
     pub async fn get_existing(&self) -> Option<quinn::Connection> {
         let guard = self.state.read().await;
-        if let Some((_, ref conn)) = *guard {
-            if conn.close_reason().is_none() {
-                return Some(conn.clone());
-            }
+        if let Some((_, ref conn)) = *guard
+            && conn.close_reason().is_none()
+        {
+            return Some(conn.clone());
         }
         None
     }
@@ -41,10 +41,10 @@ impl QuicConnectionState {
         new_conn: quinn::Connection,
     ) -> quinn::Connection {
         let mut guard = self.state.write().await;
-        if let Some((_, ref conn)) = *guard {
-            if conn.close_reason().is_none() {
-                return conn.clone();
-            }
+        if let Some((_, ref conn)) = *guard
+            && conn.close_reason().is_none()
+        {
+            return conn.clone();
         }
         *guard = Some((new_endpoint, new_conn.clone()));
         new_conn

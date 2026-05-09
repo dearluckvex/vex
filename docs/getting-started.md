@@ -4,7 +4,7 @@
 
 ### 下载预编译二进制
 
-从 [GitHub Releases](https://github.com/YOUR_USERNAME/vex/releases) 下载对应平台的二进制文件：
+从 [GitHub Releases](https://github.com/dearluckvex/vex/releases) 下载对应平台的二进制文件：
 
 | 平台 | CLI | GUI |
 |------|-----|-----|
@@ -33,7 +33,7 @@ sudo apt-get install -y \
 **编译**
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/vex.git
+git clone https://github.com/dearluckvex/vex.git
 cd vex
 
 cargo build --release --package vex-cli   # CLI
