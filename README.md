@@ -1,8 +1,14 @@
 # Vex
 
-[![CI](https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml)
-[![Release](https://github.com/YOUR_USERNAME/vex/actions/workflows/release.yml/badge.svg)](https://github.com/YOUR_USERNAME/vex/releases)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<p align="center">
+  <img src="crates/vex-gui/assets/logo-banner.svg" alt="Vex Logo" width="360"/>
+</p>
+
+<p align="center">
+  <a href="https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml"><img src="https://github.com/YOUR_USERNAME/vex/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://github.com/YOUR_USERNAME/vex/releases"><img src="https://github.com/YOUR_USERNAME/vex/actions/workflows/release.yml/badge.svg" alt="Release"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
+</p>
 
 A cross-platform proxy client written in Rust, supporting multiple protocols, subscription management, TUN mode, and flexible routing rules.
 
@@ -157,6 +163,13 @@ vex/
 │   ├── vex-core/    # Core library: protocols, proxy, DNS, routing
 │   ├── vex-cli/     # Command-line interface
 │   ├── vex-gui/     # GUI application (GPUI)
+│   │   └── assets/
+│   │       ├── logo.svg          # App icon (256×256, dark bg)
+│   │       ├── logo-icon.svg     # In-app fox icon (transparent bg)
+│   │       ├── logo-banner.svg   # Horizontal banner (480×128)
+│   │       ├── icon.ico          # Windows executable icon
+│   │       ├── icon.icns         # macOS app bundle icon
+│   │       └── icon-{16..512}.png  # Linux / cross-platform PNGs
 │   └── craftls/       # Patched rustls with custom TLS fingerprinting
 ├── config.yaml.example
 └── .github/workflows/
