@@ -1,4 +1,4 @@
-设计成<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 128" width="480" height="128">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 128" width="480" height="128">
   <!-- Background -->
   <rect width="480" height="128" rx="16" fill="#1c1c1c"/>
 
