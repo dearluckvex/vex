@@ -172,7 +172,29 @@ fn cleanup_on_exit() {
     vex_core::emergency_restore_routes();
 }
 
+/// Write a timestamped line to %APPDATA%\vex\startup.log (best-effort).
+fn startup_log(msg: &str) {
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let log_path = std::path::PathBuf::from(appdata)
+            .join("vex")
+            .join("startup.log");
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(f, "{}", msg);
+        }
+    }
+}
+
 fn main() {
+    startup_log("[1] main() started");
+
     // Set up tracing with both stdout and in-memory capture
     let log_buf = log_buffer::new_log_buffer();
     let capture_layer = log_buffer::LogCaptureLayer::new(log_buf.clone());
@@ -181,6 +203,8 @@ fn main() {
         .with(tracing_subscriber::fmt::layer())
         .with(capture_layer)
         .init();
+
+    startup_log("[2] tracing initialized");
 
     // Register panic hook to clear system proxy even on panic
     let default_panic = std::panic::take_hook();
@@ -205,6 +229,8 @@ fn main() {
         .build()
         .expect("Failed to create tokio runtime");
     let tokio_handle = rt.handle().clone();
+
+    startup_log("[3] tokio runtime created");
 
     // Register Ctrl+C handler to clean up system proxy
     let ctrlc_handle = tokio_handle.clone();
@@ -242,9 +268,12 @@ fn main() {
         unsafe { SetConsoleCtrlHandler(console_ctrl_handler, 1) };
     }
 
+    startup_log("[4] creating GPUI application");
     let app = Application::new().with_assets(Assets);
+    startup_log("[5] calling app.run");
 
     app.run(move |cx| {
+        startup_log("[6] inside app.run callback");
         gpui_component::init(cx);
         // Force dark mode to match our fixed dark color scheme
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
@@ -264,25 +293,34 @@ fn main() {
 
         let handle = tokio_handle.clone();
         let buf = log_buf.clone();
-        cx.spawn(async move |cx| {
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(100.0), px(100.0)),
-                    size(px(960.0), px(640.0)),
-                ))),
-                window_min_size: Some(size(px(680.0), px(480.0))),
-                titlebar: Some(app::AppState::titlebar_options()),
-                ..Default::default()
-            };
 
-            cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| app::AppState::new(window, cx, handle, buf));
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("Failed to open window");
-        })
-        .detach();
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                point(px(100.0), px(100.0)),
+                size(px(960.0), px(640.0)),
+            ))),
+            window_min_size: Some(size(px(680.0), px(480.0))),
+            titlebar: Some(app::AppState::titlebar_options()),
+            ..Default::default()
+        };
+
+        startup_log("[7] calling cx.open_window");
+        match cx.open_window(options, |window, cx| {
+            startup_log("[8] inside open_window callback — constructing AppState");
+            let view = cx.new(|cx| app::AppState::new(window, cx, handle, buf));
+            startup_log("[9] AppState constructed — wrapping in Root");
+            cx.new(|cx| Root::new(view, window, cx))
+        }) {
+            Ok(_) => startup_log("[10] open_window succeeded"),
+            Err(e) => {
+                let msg = format!("[ERR] open_window failed: {e}");
+                startup_log(&msg);
+                panic!("Failed to open window: {e}");
+            }
+        }
     });
+
+    startup_log("[11] app.run returned — process exiting");
 
     // App exited — always clean up system proxy
     cleanup_on_exit();
