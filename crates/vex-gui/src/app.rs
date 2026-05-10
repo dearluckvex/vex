@@ -2329,10 +2329,13 @@ impl AppState {
                                                 )
                                                 .child({
                                                     let is_connecting = self.proxy_status.contains("...");
+                                                    let can_connect = self.proxy_running
+                                                        || (!self.nodes.is_empty() && self.selected_node.is_some());
                                                     let connect_btn = Button::new("connect-btn").xsmall()
                                                         .label(btn_label.to_string())
                                                         .tooltip("Toggle proxy connection (Ctrl+Shift+C)")
                                                         .loading(is_connecting)
+                                                        .disabled(!can_connect)
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.toggle_proxy(cx);
                                                         }));
