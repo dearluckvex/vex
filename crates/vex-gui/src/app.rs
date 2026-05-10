@@ -2146,7 +2146,7 @@ impl AppState {
             rgb(TEXT_SECONDARY)
         };
 
-        let selected_name = self
+        let _selected_name = self
             .selected_node
             .and_then(|i| self.nodes.get(i))
             .map(|n| n.name.clone())
@@ -2343,7 +2343,7 @@ impl AppState {
                                                     }
                                                 }),
                                         )
-                                        .when(startup_phase >= 1 && startup_phase <= 2, |d| {
+                                        .when((1..=2).contains(&startup_phase), |d| {
                                             d.child(div().child(render_proxy_steps(startup_phase)))
                                         })
                                         .child(
@@ -2699,6 +2699,7 @@ impl AppState {
 // === Nodes View ===
 
 impl AppState {
+    #[allow(clippy::let_and_return)]
     fn render_nodes(&mut self, cx: &mut Context<Self>) -> Div {
         let node_count = self.nodes.len();
 
@@ -2781,7 +2782,7 @@ impl AppState {
         };
         let cur_tag_filter = self.tag_filter.clone();
 
-        let mut content = div()
+        let content = div()
             .flex()
             .flex_col()
             .gap_3()
