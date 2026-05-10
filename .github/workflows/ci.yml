@@ -208,18 +208,31 @@ jobs:
 
       - name: Package Merlin plugin
         run: |
-          PKG="vex-merlin-${{ matrix.arch }}"
-          mkdir -p "$PKG/bin"
-          # Binary
-          cp target/${{ matrix.target }}/release/vex-cli "$PKG/bin/vex-cli-${{ matrix.arch }}"
-          chmod +x "$PKG/bin/vex-cli-${{ matrix.arch }}"
-          # Plugin files
-          cp merlin/install.sh merlin/uninstall.sh merlin/config.yaml.template "$PKG/"
-          cp -r merlin/scripts merlin/webui "$PKG/"
+          ARCH="${{ matrix.arch }}"
+          # Module name must be the root directory name in the tar (koolcenter requirement)
+          PKG="vex"
+          TARBALL="vex-merlin-${ARCH}.tar.gz"
+          mkdir -p "$PKG/bin" "$PKG/webs" "$PKG/scripts" "$PKG/cgi-bin"
+          # Binary — arch-specific name so install.sh can auto-detect
+          cp "target/${{ matrix.target }}/release/vex-cli" "$PKG/bin/vex-cli-${ARCH}"
+          chmod +x "$PKG/bin/vex-cli-${ARCH}"
+          # Top-level metadata
+          cp merlin/install.sh merlin/uninstall.sh merlin/config.yaml.template \
+             merlin/version "$PKG/"
+          # .valid — platform string for koolcenter pre-validation
+          if [ "$ARCH" = "aarch64" ]; then echo "hnd"; else echo "arm"; fi > "$PKG/.valid"
+          # Scripts
+          cp merlin/scripts/vex.sh merlin/scripts/iptables.sh \
+             merlin/scripts/dnsmasq.conf "$PKG/scripts/"
+          # Web UI (koolcenter format: webs/Module_vex.asp)
+          cp merlin/webui/webs/Module_vex.asp "$PKG/webs/Module_vex.asp"
+          # CGI backend
+          cp merlin/webui/cgi-bin/vex.cgi "$PKG/cgi-bin/vex.cgi"
+          # Permissions
           chmod +x "$PKG/install.sh" "$PKG/uninstall.sh" \
                    "$PKG/scripts/vex.sh" "$PKG/scripts/iptables.sh" \
-                   "$PKG/webui/cgi-bin/vex.cgi"
-          tar -czf "${PKG}.tar.gz" "$PKG"
+                   "$PKG/cgi-bin/vex.cgi"
+          tar -czf "$TARBALL" "$PKG"
 
       - name: Upload Merlin plugin artifact
         uses: actions/upload-artifact@v4

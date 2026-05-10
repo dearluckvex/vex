@@ -1,20 +1,33 @@
 #!/bin/sh
-# Vex Merlin Router Plugin Installer
-# Supports AsusWRT-Merlin firmware (armv7 / aarch64)
+# Vex Plugin Installer
+# Supports:
+#   1. koolcenter / koolshare software center (auto-detected)
+#   2. Standard AsusWRT-Merlin firmware (armv7 / aarch64)
 #
 # Usage: sh install.sh [arch]           — offline install from bundled package
 #        sh install.sh --online [arch]  — download latest binary from GitHub
 #        sh install.sh --update [arch]  — update binary only (preserve config)
 #   arch: armv7 | aarch64 (auto-detected if not specified)
 
-set -e
+# Do NOT use set -e — koolshare's base.sh changes error handling
 
+# ── Common paths ──────────────────────────────────────────────────────────────
+# Plugin data always lives under /jffs/addons/vex/ (both modes)
 VEX_DIR="/jffs/addons/vex"
 VEX_BIN="$VEX_DIR/vex-cli"
 VEX_CONF="$VEX_DIR/config.yaml"
 VEX_SCRIPTS="$VEX_DIR/scripts"
-WWW_VEX="/www/ext/vex"
 CGI_BIN="/www/cgi-bin"
+
+# koolshare paths
+KS_DIR="/koolshare"
+KS_WEBS="$KS_DIR/webs"
+KS_SCRIPTS="$KS_DIR/scripts"
+KS_INIT="$KS_DIR/init.d"
+MODULE="vex"   # must match the package directory name
+
+# Standard Merlin path (used when NOT in koolshare mode)
+WWW_VEX="/www/ext/vex"
 
 # GitHub release config — set VEX_GITHUB_REPO env var or edit below
 GITHUB_REPO="${VEX_GITHUB_REPO:-dearluckvex/vex}"
@@ -24,6 +37,14 @@ info()  { printf "${CYAN}[Vex] %s${NC}\n" "$*"; }
 ok()    { printf "${GREEN}[Vex] ✓ %s${NC}\n" "$*"; }
 warn()  { printf "${YELLOW}[Vex] ! %s${NC}\n" "$*"; }
 err()   { printf "${RED}[Vex] ✗ %s${NC}\n" "$*" >&2; exit 1; }
+
+# ── Detect koolshare environment ───────────────────────────────────────────────
+KOOLSHARE=0
+if [ -d "$KS_DIR" ] && [ -f "$KS_DIR/scripts/base.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$KS_DIR/scripts/base.sh" 2>/dev/null || true
+    KOOLSHARE=1
+fi
 
 # ── Parse arguments ────────────────────────────────────────────────────────────
 ONLINE=false
@@ -99,9 +120,8 @@ else
     fi
 fi
 
-# ── Check Merlin environment ───────────────────────────────────────────────────
+# ── Environment check ─────────────────────────────────────────────────────────
 [ -d /jffs ] || err "JFFS not mounted. Enable JFFS custom scripts in router settings."
-[ -f /usr/sbin/nvram ] || err "NVRAM tool not found. Is this an AsusWRT-Merlin router?"
 check_deps
 
 # ── Update-only mode ───────────────────────────────────────────────────────────
@@ -118,46 +138,42 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     exit 0
 fi
 
-# ── Create directories ─────────────────────────────────────────────────────────
-info "Creating directories..."
-mkdir -p "$VEX_DIR" "$VEX_SCRIPTS" "$WWW_VEX" /jffs/scripts /jffs/configs/dnsmasq.d
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+install_common_files() {
+    # Binary, scripts, config — same in both modes
+    info "Creating data directories..."
+    mkdir -p "$VEX_DIR" "$VEX_SCRIPTS" "$CGI_BIN" /jffs/scripts /jffs/configs/dnsmasq.d
 
-# ── Backup existing config ─────────────────────────────────────────────────────
-if [ -f "$VEX_CONF" ]; then
-    cp "$VEX_CONF" "$VEX_CONF.bak"
-    ok "Existing config backed up to $VEX_CONF.bak"
-fi
+    if [ -f "$VEX_CONF" ]; then
+        cp "$VEX_CONF" "$VEX_CONF.bak"
+        ok "Existing config backed up to $VEX_CONF.bak"
+    fi
 
-# ── Install binary ─────────────────────────────────────────────────────────────
-info "Installing vex-cli binary..."
-cp "$BINARY" "$VEX_BIN" && chmod +x "$VEX_BIN"
-ok "Binary installed: $("$VEX_BIN" --version 2>/dev/null || echo 'version unknown')"
+    info "Installing vex-cli binary..."
+    cp "$BINARY" "$VEX_BIN" && chmod +x "$VEX_BIN"
+    ok "Binary installed: $("$VEX_BIN" --version 2>/dev/null || echo 'version unknown')"
 
-# ── Install scripts ────────────────────────────────────────────────────────────
-info "Installing control scripts..."
-cp "$SCRIPT_DIR/scripts/vex.sh"       "$VEX_SCRIPTS/vex.sh"
-cp "$SCRIPT_DIR/scripts/iptables.sh"  "$VEX_SCRIPTS/iptables.sh"
-cp "$SCRIPT_DIR/scripts/dnsmasq.conf" "$VEX_SCRIPTS/dnsmasq.conf.template"
-chmod +x "$VEX_SCRIPTS/vex.sh" "$VEX_SCRIPTS/iptables.sh"
-ok "Control scripts installed"
+    info "Installing control scripts..."
+    cp "$SCRIPT_DIR/scripts/vex.sh"       "$VEX_SCRIPTS/vex.sh"
+    cp "$SCRIPT_DIR/scripts/iptables.sh"  "$VEX_SCRIPTS/iptables.sh"
+    cp "$SCRIPT_DIR/scripts/dnsmasq.conf" "$VEX_SCRIPTS/dnsmasq.conf.template"
+    chmod +x "$VEX_SCRIPTS/vex.sh" "$VEX_SCRIPTS/iptables.sh"
+    ok "Control scripts installed"
 
-# ── Install Web UI ─────────────────────────────────────────────────────────────
-info "Installing Web UI..."
-cp "$SCRIPT_DIR/webui/pages/vex.asp"   "$WWW_VEX/vex.asp"
-cp "$SCRIPT_DIR/webui/cgi-bin/vex.cgi" "$CGI_BIN/vex.cgi"
-chmod +x "$CGI_BIN/vex.cgi"
-ok "Web UI installed"
+    info "Installing CGI backend..."
+    cp "$SCRIPT_DIR/cgi-bin/vex.cgi" "$CGI_BIN/vex.cgi"
+    chmod +x "$CGI_BIN/vex.cgi"
+    ok "CGI backend installed"
 
-# ── Generate default config ────────────────────────────────────────────────────
-if [ ! -f "$VEX_CONF" ]; then
-    info "Generating default config..."
-    cp "$SCRIPT_DIR/config.yaml.template" "$VEX_CONF"
-    ok "Default config at $VEX_CONF"
-else
-    ok "Existing config preserved"
-fi
+    if [ ! -f "$VEX_CONF" ]; then
+        info "Generating default config..."
+        cp "$SCRIPT_DIR/config.yaml.template" "$VEX_CONF"
+        ok "Default config at $VEX_CONF"
+    else
+        ok "Existing config preserved"
+    fi
+}
 
-# ── Hook into Merlin startup scripts ──────────────────────────────────────────
 hook_script() {
     local file="$1" marker="$2" content="$3"
     [ -f "$file" ] || { printf '#!/bin/sh\n' > "$file"; chmod +x "$file"; }
@@ -170,57 +186,131 @@ hook_script() {
     fi
 }
 
-info "Hooking into Merlin startup scripts..."
+# ─────────────────────────────────────────────────────────────────────────────
+# koolshare / koolcenter install path
+# ─────────────────────────────────────────────────────────────────────────────
+ks_install() {
+    local VER
+    VER=$(cat "${SCRIPT_DIR}/version" 2>/dev/null || echo "0.1.0")
+    info "koolcenter 模式安装 Vex ${VER}..."
 
-hook_script "/jffs/scripts/firewall-start" "# Vex firewall" \
+    install_common_files
+
+    # koolshare Web UI: Module_vex.asp → /koolshare/webs/
+    info "Installing koolshare Web UI..."
+    mkdir -p "$KS_WEBS" "$KS_SCRIPTS" "$KS_INIT"
+    cp "$SCRIPT_DIR/webs/Module_vex.asp" "$KS_WEBS/Module_vex.asp"
+    ok "Web UI installed to $KS_WEBS/Module_vex.asp"
+
+    # koolshare startup wrapper: delegates to our vex.sh
+    cat > "$KS_SCRIPTS/${MODULE}_config.sh" << 'WRAPPER'
+#!/bin/sh
+case "$1" in
+    start|"") /jffs/addons/vex/scripts/vex.sh start ;;
+    stop)     /jffs/addons/vex/scripts/vex.sh stop  ;;
+    restart)  /jffs/addons/vex/scripts/vex.sh restart ;;
+    *)        /jffs/addons/vex/scripts/vex.sh "$@" ;;
+esac
+WRAPPER
+    chmod +x "$KS_SCRIPTS/${MODULE}_config.sh"
+
+    # Register with koolshare init.d for auto-start
+    ln -sf "$KS_SCRIPTS/${MODULE}_config.sh" "$KS_INIT/S98${MODULE}.sh"
+    ok "Registered koolshare startup hook"
+
+    # Register plugin metadata in dbus (software center status)
+    dbus set "${MODULE}_version"="${VER}"                        2>/dev/null || true
+    dbus set "softcenter_module_${MODULE}_version"="${VER}"      2>/dev/null || true
+    dbus set "softcenter_module_${MODULE}_install"="1"          2>/dev/null || true
+    dbus set "softcenter_module_${MODULE}_name"="${MODULE}"      2>/dev/null || true
+    dbus set "softcenter_module_${MODULE}_title"="Vex"          2>/dev/null || true
+    dbus set "softcenter_module_${MODULE}_description"="透明代理（TUN/SOCKS5/HTTP）" 2>/dev/null || true
+    ok "Plugin registered in dbus"
+
+    [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
+    # koolshare installer expects temp dir cleanup
+    rm -rf "/tmp/${MODULE}" "/tmp/${MODULE}.tar.gz" 2>/dev/null || true
+
+    echo ""
+    ok "Vex ${VER} 安装成功！"
+    echo ""
+    echo "  配置文件 : $VEX_CONF"
+    echo "  Web UI   : 软件中心 → Vex"
+    echo ""
+    echo "  启动: $VEX_SCRIPTS/vex.sh start"
+    echo "  停止: $VEX_SCRIPTS/vex.sh stop"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Standard AsusWRT-Merlin install path
+# ─────────────────────────────────────────────────────────────────────────────
+merlin_install() {
+    info "Standard Merlin 模式安装..."
+    mkdir -p "$WWW_VEX"
+    install_common_files
+
+    info "Installing Web UI page..."
+    cp "$SCRIPT_DIR/webs/Module_vex.asp" "$WWW_VEX/vex.asp"
+    ok "Web UI installed to $WWW_VEX/vex.asp"
+
+    info "Hooking into Merlin startup scripts..."
+
+    hook_script "/jffs/scripts/firewall-start" "# Vex firewall" \
 "# Vex firewall
 [ -x $VEX_DIR/scripts/iptables.sh ] && $VEX_DIR/scripts/iptables.sh start
 "
 
-hook_script "/jffs/scripts/services-start" "# Vex services" \
+    hook_script "/jffs/scripts/services-start" "# Vex services" \
 "# Vex services
 [ -x $VEX_DIR/scripts/vex.sh ] && $VEX_DIR/scripts/vex.sh start
 "
 
-SERVICE_EVENT="/jffs/scripts/service-event"
-[ -f "$SERVICE_EVENT" ] || { printf '#!/bin/sh\n' > "$SERVICE_EVENT"; chmod +x "$SERVICE_EVENT"; }
-if ! grep -q "# Vex service-event" "$SERVICE_EVENT" 2>/dev/null; then
-    cat >> "$SERVICE_EVENT" << 'EOF'
+    SERVICE_EVENT="/jffs/scripts/service-event"
+    [ -f "$SERVICE_EVENT" ] || { printf '#!/bin/sh\n' > "$SERVICE_EVENT"; chmod +x "$SERVICE_EVENT"; }
+    if ! grep -q "# Vex service-event" "$SERVICE_EVENT" 2>/dev/null; then
+        cat >> "$SERVICE_EVENT" << 'EOF'
 
 # Vex service-event
 if [ "$1" = "restart" ] && [ "$2" = "vex" ]; then
     /jffs/addons/vex/scripts/vex.sh restart
 fi
 EOF
-    chmod +x "$SERVICE_EVENT"
-    ok "Hooked into service-event"
-fi
+        chmod +x "$SERVICE_EVENT"
+        ok "Hooked into service-event"
+    fi
 
-# ── Cleanup temp binary ────────────────────────────────────────────────────────
-[ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
+    [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
 
-# ── Post-install validation ────────────────────────────────────────────────────
-info "Validating installation..."
-errors=0
-[ -x "$VEX_BIN" ]                 || { warn "Binary not executable";       errors=$((errors+1)); }
-[ -f "$VEX_CONF" ]                || { warn "Config file missing";         errors=$((errors+1)); }
-[ -x "$VEX_SCRIPTS/vex.sh" ]     || { warn "vex.sh not executable";       errors=$((errors+1)); }
-[ -x "$VEX_SCRIPTS/iptables.sh" ] || { warn "iptables.sh not executable"; errors=$((errors+1)); }
-[ -f "$WWW_VEX/vex.asp" ]        || { warn "Web UI page missing";         errors=$((errors+1)); }
-[ -x "$CGI_BIN/vex.cgi" ]        || { warn "CGI script not executable";   errors=$((errors+1)); }
-[ "$errors" -eq 0 ] && ok "All files installed correctly" \
-                     || warn "$errors validation warning(s) — check output above"
+    # Post-install validation
+    info "Validating installation..."
+    errors=0
+    [ -x "$VEX_BIN" ]                  || { warn "Binary not executable";       errors=$((errors+1)); }
+    [ -f "$VEX_CONF" ]                 || { warn "Config file missing";         errors=$((errors+1)); }
+    [ -x "$VEX_SCRIPTS/vex.sh" ]      || { warn "vex.sh not executable";       errors=$((errors+1)); }
+    [ -x "$VEX_SCRIPTS/iptables.sh" ] || { warn "iptables.sh not executable";  errors=$((errors+1)); }
+    [ -f "$WWW_VEX/vex.asp" ]         || { warn "Web UI page missing";         errors=$((errors+1)); }
+    [ -x "$CGI_BIN/vex.cgi" ]         || { warn "CGI script not executable";   errors=$((errors+1)); }
+    [ "$errors" -eq 0 ] && ok "All files installed correctly" \
+                         || warn "$errors validation warning(s) — check output above"
 
-# ── Done ───────────────────────────────────────────────────────────────────────
-echo ""
-ok "Vex installed successfully!"
-echo ""
-echo "  Config file : $VEX_CONF"
-echo "  Web UI      : http://router.asus.com/ext/vex/vex.asp"
-echo ""
-echo "  Start  : $VEX_SCRIPTS/vex.sh start"
-echo "  Stop   : $VEX_SCRIPTS/vex.sh stop"
-echo "  Status : $VEX_SCRIPTS/vex.sh status"
-echo "  Update : sh $0 --update"
-echo ""
+    echo ""
+    ok "Vex installed successfully!"
+    echo ""
+    echo "  Config file : $VEX_CONF"
+    echo "  Web UI      : http://router.asus.com/ext/vex/vex.asp"
+    echo ""
+    echo "  Start  : $VEX_SCRIPTS/vex.sh start"
+    echo "  Stop   : $VEX_SCRIPTS/vex.sh stop"
+    echo "  Status : $VEX_SCRIPTS/vex.sh status"
+    echo "  Update : sh $0 --update"
+    echo ""
 echo "Edit $VEX_CONF to add your subscription or nodes, then start."
+}
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+if [ "$KOOLSHARE" = "1" ]; then
+    ks_install
+else
+    merlin_install
+fi

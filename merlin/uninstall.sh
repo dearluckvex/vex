@@ -1,17 +1,32 @@
 #!/bin/sh
-# Vex Merlin Router Plugin Uninstaller
+# Vex Plugin Uninstaller
+# Supports koolcenter software center and standard AsusWRT-Merlin
 
 VEX_DIR="/jffs/addons/vex"
 WWW_VEX="/www/ext/vex"
 CGI_BIN="/www/cgi-bin"
+MODULE="vex"
+KS_DIR="/koolshare"
+KS_WEBS="$KS_DIR/webs"
+KS_SCRIPTS="$KS_DIR/scripts"
+KS_INIT="$KS_DIR/init.d"
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { printf "${CYAN}[Vex] %s${NC}\n" "$*"; }
 ok()   { printf "${GREEN}[Vex] ✓ %s${NC}\n" "$*"; }
 warn() { printf "${YELLOW}[Vex] ! %s${NC}\n" "$*"; }
 
+# ── Detect koolshare environment ───────────────────────────────────────────────
+KOOLSHARE=0
+if [ -d "$KS_DIR" ] && [ -f "$KS_DIR/scripts/base.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$KS_DIR/scripts/base.sh" 2>/dev/null || true
+    KOOLSHARE=1
+fi
+
 # ── Confirm ───────────────────────────────────────────────────────────────────
-if [ "$1" != "--force" ]; then
+# koolshare runs uninstall.sh non-interactively; skip prompt if invoked that way
+if [ "$KOOLSHARE" != "1" ] && [ "$1" != "--force" ]; then
     printf "This will completely remove Vex. Continue? [y/N] "
     read -r ans
     case "$ans" in y|Y) ;; *) echo "Aborted."; exit 0 ;; esac
@@ -68,6 +83,22 @@ info "Removing dnsmasq config..."
 rm -f /jffs/configs/dnsmasq.d/vex.conf
 service restart_dnsmasq 2>/dev/null || true
 ok "dnsmasq config removed"
+
+# ── koolshare-specific cleanup ────────────────────────────────────────────────
+if [ "$KOOLSHARE" = "1" ]; then
+    info "Removing koolshare integration..."
+    rm -f "$KS_WEBS/Module_vex.asp"
+    rm -f "$KS_SCRIPTS/${MODULE}_config.sh"
+    rm -f "$KS_INIT/S98${MODULE}.sh"
+    # Deregister from software center
+    dbus remove "softcenter_module_${MODULE}_install"    2>/dev/null || true
+    dbus remove "softcenter_module_${MODULE}_version"    2>/dev/null || true
+    dbus remove "softcenter_module_${MODULE}_name"       2>/dev/null || true
+    dbus remove "softcenter_module_${MODULE}_title"      2>/dev/null || true
+    dbus remove "softcenter_module_${MODULE}_description" 2>/dev/null || true
+    dbus remove "${MODULE}_version"                      2>/dev/null || true
+    ok "koolshare integration removed"
+fi
 
 # ── Remove Vex files ───────────────────────────────────────────────────────────
 info "Removing Vex files..."
