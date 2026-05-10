@@ -75,15 +75,29 @@ update_dnsmasq() {
     mkdir -p "$DNSMASQ_CONF_DIR"
 
     if [ "$action" = "start" ] && [ -f "$TEMPLATE" ]; then
-        local dns_port router_ip
+        local dns_port router_ip dns_server
         dns_port=$(get_config_value dns_port)
         dns_port=${dns_port:-5300}
         router_ip=$(nvram get lan_ipaddr 2>/dev/null || echo "192.168.1.1")
+        dns_server=$(get_config_value dns_direct_server)
+        dns_server=${dns_server:-114.114.114.114}
         sed -e "s/__DNS_PORT__/$dns_port/g" \
             -e "s/__ROUTER_IP__/$router_ip/g" \
             "$TEMPLATE" > "$VEX_DNSMASQ"
+        # Append dns_direct_domains from config.yaml as dnsmasq server entries
+        local domain_count=0
+        awk -v dns="$dns_server" '
+            /^dns_direct_domains:/ { in_d=1; next }
+            in_d && /^[a-zA-Z_]/ { in_d=0 }
+            in_d && /^[[:space:]]*- / {
+                sub(/^[[:space:]]*- /, ""); gsub(/["'"'"'[:space:]]/, "")
+                if (length > 0) { printf "server=/%s/%s\n", $0, dns; count++ }
+            }
+            END { exit (count > 0 ? 0 : 1) }
+        ' "$VEX_CONF" >> "$VEX_DNSMASQ" && \
+            domain_count=$(awk '/^dns_direct_domains:/{in_d=1;next} in_d&&/^[a-zA-Z_]/{in_d=0} in_d&&/^[[:space:]]*- /{c++} END{print c+0}' "$VEX_CONF")
         service restart_dnsmasq 2>/dev/null || true
-        ok "dnsmasq rules applied (DNS port: $dns_port)"
+        ok "dnsmasq rules applied (DNS port: $dns_port, ${domain_count:-0} direct domains → $dns_server)"
     elif [ "$action" = "stop" ]; then
         rm -f "$VEX_DNSMASQ"
         service restart_dnsmasq 2>/dev/null || true
