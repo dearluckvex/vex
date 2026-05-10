@@ -1,0 +1,7 @@
+# Project-level Cargo configuration
+
+[env]
+# Point GPUI's build script to the correct fxc.exe (HLSL shader compiler).
+# GPUI 0.2.2 hardcodes the search path for SDK 10.0.26100.0, but this
+# machine has 10.0.22621.0. Setting GPUI_FXC_PATH overrides the search.
+GPUI_FXC_PATH = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\fxc.exe'
