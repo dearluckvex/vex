@@ -100,6 +100,10 @@ jobs:
         continue-on-error: ${{ runner.os == 'Linux' || runner.os == 'macOS' }}
         run: cargo build --package vex-gui --target ${{ matrix.target }}
 
+      - name: Build (GUI Release, Windows only)
+        if: runner.os == 'Windows'
+        run: cargo build --package vex-gui --release --target ${{ matrix.target }}
+
       # ── Tests ──────────────────────────────────────────────────────────────
       - name: Run tests
         run: cargo test --workspace --target ${{ matrix.target }}
@@ -117,7 +121,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/debug/vex.exe dist/vex-gui_${{ matrix.target }}.exe
+          cp target/${{ matrix.target }}/release/vex.exe dist/vex-gui_${{ matrix.target }}.exe
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
