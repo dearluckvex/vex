@@ -147,18 +147,25 @@ case "$ACTION" in
     save_config)
         # Save config from POST body (base64-encoded for safety)
         if [ -n "$POST_DATA" ]; then
-            NEW_CONF=$(echo "$POST_DATA" | grep -o '"config":"[^"]*"' | cut -d'"' -f4)
+            # Use awk for safe field extraction (handles special chars in base64 payload)
+            NEW_CONF=$(printf '%s' "$POST_DATA" | awk -F'"config":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
             if [ -n "$NEW_CONF" ]; then
-                echo "$NEW_CONF" | base64 -d > "$VEX_CONF.tmp" 2>/dev/null
+                printf '%s' "$NEW_CONF" | base64 -d > "$VEX_CONF.tmp" 2>/dev/null
                 if [ $? -eq 0 ] && [ -s "$VEX_CONF.tmp" ]; then
-                    # Backup previous config
-                    cp "$VEX_CONF" "$VEX_CONF.bak" 2>/dev/null || true
-                    mv "$VEX_CONF.tmp" "$VEX_CONF"
-                    echo '{"ok":true,"msg":"Config saved"}'
-                    is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+                    # Validate basic YAML structure: must have at least one 'key: value' line
+                    if ! grep -qE '^[a-z_][a-z_]*:' "$VEX_CONF.tmp" 2>/dev/null; then
+                        rm -f "$VEX_CONF.tmp"
+                        echo '{"ok":false,"msg":"配置格式错误，必须是有效的 YAML"}'
+                    else
+                        # Backup previous config
+                        cp "$VEX_CONF" "$VEX_CONF.bak" 2>/dev/null || true
+                        mv "$VEX_CONF.tmp" "$VEX_CONF"
+                        echo '{"ok":true,"msg":"Config saved"}'
+                        is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+                    fi
                 else
                     rm -f "$VEX_CONF.tmp"
-                    echo '{"ok":false,"msg":"Invalid config data"}'
+                    echo '{"ok":false,"msg":"Invalid config data (base64 decode failed)"}'
                 fi
             else
                 echo '{"ok":false,"msg":"No config data"}'
@@ -206,9 +213,9 @@ case "$ACTION" in
 
     add_sub)
         # Add a subscription entry to config
-        NAME=$(echo "$POST_DATA" | sed 's/.*"name":"\([^"]*\)".*/\1/')
-        URL=$(echo "$POST_DATA"  | sed 's/.*"url":"\([^"]*\)".*/\1/')
-        FORMAT=$(echo "$POST_DATA" | sed 's/.*"format":"\([^"]*\)".*/\1/')
+        NAME=$(printf '%s' "$POST_DATA" | awk -F'"name":"'   'NF>1{split($2,a,"\"");print a[1];exit}')
+        URL=$(printf '%s' "$POST_DATA"  | awk -F'"url":"'    'NF>1{split($2,a,"\"");print a[1];exit}')
+        FORMAT=$(printf '%s' "$POST_DATA" | awk -F'"format":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
         [ -z "$FORMAT" ] && FORMAT="auto"
         if [ -z "$NAME" ] || [ -z "$URL" ]; then
             echo '{"ok":false,"msg":"名称和 URL 不能为空"}'
@@ -321,7 +328,7 @@ case "$ACTION" in
 
     set_mode)
         # Set proxy mode: tun | socks | system
-        MODE=$(echo "$POST_DATA" | sed 's/.*"mode":"\([^"]*\)".*/\1/')
+        MODE=$(printf '%s' "$POST_DATA" | awk -F'"mode":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
         case "$MODE" in
             tun|socks|system)
                 if [ ! -f "$VEX_CONF" ]; then
@@ -445,11 +452,11 @@ case "$ACTION" in
 
     add_node)
         # Add a manual node entry to config
-        NAME=$(echo "$POST_DATA" | sed 's/.*"name":"\([^"]*\)".*/\1/')
-        PROTO=$(echo "$POST_DATA" | sed 's/.*"protocol":"\([^"]*\)".*/\1/')
-        SERVER=$(echo "$POST_DATA" | sed 's/.*"server":"\([^"]*\)".*/\1/')
-        PORT=$(echo "$POST_DATA" | grep -o '"port":[0-9]*' | grep -o '[0-9]*')
-        PASS=$(echo "$POST_DATA" | sed 's/.*"password":"\([^"]*\)".*/\1/')
+        NAME=$(printf '%s' "$POST_DATA" | awk -F'"name":"'     'NF>1{split($2,a,"\"");print a[1];exit}')
+        PROTO=$(printf '%s' "$POST_DATA" | awk -F'"protocol":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
+        SERVER=$(printf '%s' "$POST_DATA" | awk -F'"server":"'  'NF>1{split($2,a,"\"");print a[1];exit}')
+        PORT=$(printf '%s' "$POST_DATA" | grep -o '"port":[0-9]*' | grep -o '[0-9]*' | head -1)
+        PASS=$(printf '%s' "$POST_DATA" | awk -F'"password":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
         if [ -z "$NAME" ] || [ -z "$SERVER" ] || [ -z "$PORT" ]; then
             echo '{"ok":false,"msg":"名称、服务器地址、端口不能为空"}'
         else

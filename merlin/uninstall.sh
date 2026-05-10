@@ -50,11 +50,16 @@ for script in \
     /jffs/scripts/services-start \
     /jffs/scripts/service-event; do
     [ -f "$script" ] || continue
-    # Remove lines between our marker comment and the next blank line or marker
-    sed -i '/# Vex firewall/,/^$/d'       "$script" 2>/dev/null || true
-    sed -i '/# Vex services/,/^$/d'       "$script" 2>/dev/null || true
-    sed -i '/# Vex service-event/,/^fi/d' "$script" 2>/dev/null || true
-    sed -i '/vex/d'                        "$script" 2>/dev/null || true
+    # Remove specific lines: our comment markers and the exact vex command lines
+    sed -i '/^# Vex firewall$/d'        "$script" 2>/dev/null || true
+    sed -i '/^# Vex services$/d'        "$script" 2>/dev/null || true
+    sed -i '/^# Vex service-event$/d'   "$script" 2>/dev/null || true
+    # Remove the if/fi block for service-event (3 specific lines)
+    sed -i '/^if \[ "\$1" = "restart" \] && \[ "\$2" = "vex" \]; then$/d' "$script" 2>/dev/null || true
+    sed -i '/^    \/jffs\/addons\/vex\/scripts\/vex\.sh restart$/d'        "$script" 2>/dev/null || true
+    sed -i '/^fi$/d' "$script" 2>/dev/null || true
+    # Remove lines referencing the vex addon path
+    sed -i '\|/jffs/addons/vex/|d' "$script" 2>/dev/null || true
     ok "Cleaned $script"
 done
 

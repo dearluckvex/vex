@@ -116,7 +116,7 @@ do_start() {
 
     if is_running; then
         ok "Vex started (PID $(cat "$VEX_PID"))"
-        [ -x "$VEX_DIR/scripts/iptables.sh" ] && "$VEX_DIR/scripts/iptables.sh" start
+        [ -x "$VEX_DIR/scripts/iptables.sh" ] && "$VEX_DIR/scripts/iptables.sh" start >> "$VEX_LOG" 2>&1
         update_dnsmasq start
         setup_cron
     else
@@ -144,7 +144,7 @@ do_stop() {
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     rm -f "$VEX_PID"
 
-    [ -x "$VEX_DIR/scripts/iptables.sh" ] && "$VEX_DIR/scripts/iptables.sh" stop
+    [ -x "$VEX_DIR/scripts/iptables.sh" ] && "$VEX_DIR/scripts/iptables.sh" stop >> "$VEX_LOG" 2>&1
     update_dnsmasq stop
     remove_cron
 
