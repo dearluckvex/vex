@@ -212,7 +212,9 @@ fn main() {
         cleanup_on_exit();
         // Write crash log to %APPDATA%\vex\crash.log for diagnosis
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            let log_path = std::path::PathBuf::from(appdata).join("vex").join("crash.log");
+            let log_path = std::path::PathBuf::from(appdata)
+                .join("vex")
+                .join("crash.log");
             if let Some(parent) = log_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
