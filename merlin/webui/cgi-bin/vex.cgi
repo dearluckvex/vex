@@ -544,6 +544,89 @@ case "$ACTION" in
             "$MEM_TOTAL" "$MEM_USED" "$MEM_PCT" "$LOAD" "$UP_H" "$UP_M" "$(json_str "$WAN_IP")"
         ;;
 
+    get_direct_domains)
+        DNS_SERVER=$(get_config_value dns_direct_server)
+        DOMAINS=$(awk '
+            /^dns_direct_domains:/ { in_d=1; next }
+            in_d && /^[a-zA-Z_]/ { in_d=0 }
+            in_d && /^[[:space:]]*- / {
+                sub(/^[[:space:]]*- /, ""); gsub(/["'"'"'[:space:]]/, "")
+                if (length > 0) printf "%s\"%s\"", (n++ > 0 ? "," : ""), $0
+            }
+        ' "$VEX_CONF" 2>/dev/null)
+        printf '{"ok":true,"server":"%s","domains":[%s]}' \
+            "$(json_str "${DNS_SERVER:-114.114.114.114}")" "$DOMAINS"
+        ;;
+
+    add_direct_domain)
+        DOMAIN=$(printf '%s' "$POST_DATA" | awk -F'"domain":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
+        if [ -z "$DOMAIN" ] || ! printf '%s' "$DOMAIN" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$'; then
+            echo '{"ok":false,"msg":"域名格式无效"}'
+        elif [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"msg":"配置文件不存在"}'
+        else
+            if awk -v dom="$DOMAIN" '
+                /^dns_direct_domains:/{in_d=1;next}
+                in_d&&/^[a-zA-Z_]/{in_d=0}
+                in_d&&/^[[:space:]]*- /{sub(/.*- /,"");gsub(/["'"'"'[:space:]]/,"");if($0==dom)found=1}
+                END{exit !found}
+            ' "$VEX_CONF" 2>/dev/null; then
+                printf '{"ok":false,"msg":"域名 %s 已存在"}' "$(json_str "$DOMAIN")"
+            else
+                tmp="$VEX_CONF.tmp.$$"
+                awk -v d="$DOMAIN" '
+                    /^dns_direct_domains:[[:space:]]*\[\]/ {
+                        print "dns_direct_domains:"
+                        printf "  - \"%s\"\n", d
+                        done=1; next
+                    }
+                    /^dns_direct_domains:/ { in_d=1; print; next }
+                    in_d && /^[a-zA-Z_]/ {
+                        if (!done) { printf "  - \"%s\"\n", d; done=1 }
+                        in_d=0
+                    }
+                    { print }
+                    END { if (!done) { print "\ndns_direct_domains:"; printf "  - \"%s\"\n", d } }
+                ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+                printf '{"ok":true,"msg":"已添加: %s"}' "$(json_str "$DOMAIN")"
+            fi
+        fi
+        ;;
+
+    del_direct_domain)
+        IDX=$(printf '%s' "$POST_DATA" | grep -o '"index":[0-9]*' | grep -o '[0-9]*' | head -1)
+        if [ -z "$IDX" ] || [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"msg":"参数错误"}'
+        else
+            tmp="$VEX_CONF.tmp.$$"
+            awk -v target="$IDX" '
+                BEGIN { in_d=0; entry=-1 }
+                /^dns_direct_domains:/ { in_d=1; print; next }
+                in_d && /^[a-zA-Z_]/ { in_d=0 }
+                in_d && /^[[:space:]]*- / { entry++; if (entry == target+0) next }
+                { print }
+            ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            echo '{"ok":true,"msg":"已删除"}'
+        fi
+        ;;
+
+    set_direct_server)
+        SERVER=$(printf '%s' "$POST_DATA" | awk -F'"server":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
+        if [ -z "$SERVER" ] || ! printf '%s' "$SERVER" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+            echo '{"ok":false,"msg":"请输入有效的 IPv4 地址"}'
+        elif [ ! -f "$VEX_CONF" ]; then
+            echo '{"ok":false,"msg":"配置文件不存在"}'
+        else
+            if grep -q '^dns_direct_server:' "$VEX_CONF"; then
+                sed -i "s/^dns_direct_server:.*/dns_direct_server: \"$SERVER\"/" "$VEX_CONF"
+            else
+                echo "dns_direct_server: \"$SERVER\"" >> "$VEX_CONF"
+            fi
+            printf '{"ok":true,"msg":"DNS 服务器已更新为 %s，重启后生效"}' "$(json_str "$SERVER")"
+            is_running && "$VEX_SH" restart >> "$VEX_LOG" 2>&1 &
+        fi
+        ;;
+
     *)
         echo '{"error":"Unknown action"}'
         ;;

@@ -359,8 +359,55 @@ function toggleLogAuto() {
     }
 }
 
+/* ── Direct Domains ────────────────────────────────────────────────── */
+function loadDirectDomains() {
+    api('get_direct_domains', null, function(d) {
+        if (!d.ok) return;
+        document.getElementById('dns-server-val').value = d.server || '114.114.114.114';
+        var list = document.getElementById('domain-list');
+        list.innerHTML = '';
+        if (!d.domains || d.domains.length === 0) {
+            list.innerHTML = '<div style="color:#999;padding:6px 0;">暂无直连域名（所有域名经 Vex DNS 解析）</div>';
+            return;
+        }
+        d.domains.forEach(function(dom, i) {
+            var row = document.createElement('div');
+            row.className = 'node-row';
+            row.innerHTML =
+                '<span class="node-name">' + escHtml(dom) + '</span>' +
+                '<button class="btn btn-danger btn-sm" onclick="delDirectDomain(' + i + ')">删除</button>';
+            list.appendChild(row);
+        });
+    });
+}
+
+function saveDirectServer() {
+    var server = document.getElementById('dns-server-val').value.trim();
+    if (!server) { showMsg('请输入 DNS 服务器地址', 'err'); return; }
+    api('set_direct_server', {server: server}, function(r) {
+        showMsg(r.msg || (r.ok ? 'DNS 服务器已更新' : '更新失败'), r.ok ? 'ok' : 'err');
+    });
+}
+
+function addDirectDomain() {
+    var domain = document.getElementById('add-domain').value.trim().toLowerCase();
+    if (!domain) { showMsg('请输入域名', 'err'); return; }
+    api('add_direct_domain', {domain: domain}, function(r) {
+        showMsg(r.msg || (r.ok ? '已添加' : '添加失败'), r.ok ? 'ok' : 'err');
+        if (r.ok) { document.getElementById('add-domain').value = ''; loadDirectDomains(); }
+    });
+}
+
+function delDirectDomain(idx) {
+    if (!confirm('确认删除该直连域名？')) return;
+    api('del_direct_domain', {index: idx}, function(r) {
+        showMsg(r.msg || (r.ok ? '已删除' : '删除失败'), r.ok ? 'ok' : 'err');
+        if (r.ok) loadDirectDomains();
+    });
+}
+
 /* ── Tabs ──────────────────────────────────────────────────────────── */
-var TABS = ['tab-overview','tab-subs','tab-config','tab-log'];
+var TABS = ['tab-overview','tab-subs','tab-dns','tab-config','tab-log'];
 function showTab(id) {
     TABS.forEach(function(t) {
         document.getElementById(t).style.display = 'none';
@@ -370,6 +417,7 @@ function showTab(id) {
     document.getElementById('nav-' + id).className = 'nav-item active';
     if (id === 'tab-overview') loadNodes();
     if (id === 'tab-subs')     loadSubs();
+    if (id === 'tab-dns')      loadDirectDomains();
     if (id === 'tab-config')   loadConfig();
     if (id === 'tab-log')      loadLog();
 }
@@ -399,6 +447,7 @@ window.onload = function() {
 <div class="nav">
   <div class="nav-item" id="nav-tab-overview" onclick="showTab('tab-overview')">总览</div>
   <div class="nav-item" id="nav-tab-subs"     onclick="showTab('tab-subs')">订阅管理</div>
+  <div class="nav-item" id="nav-tab-dns"      onclick="showTab('tab-dns')">DNS 域名</div>
   <div class="nav-item" id="nav-tab-config"   onclick="showTab('tab-config')">配置</div>
   <div class="nav-item" id="nav-tab-log"      onclick="showTab('tab-log')">日志</div>
 </div>
@@ -528,6 +577,38 @@ window.onload = function() {
       <div class="row">
         <button class="btn btn-primary" onclick="updateSubs()">更新所有订阅</button>
         <span style="font-size:11px;color:#999;">更新后将自动重启服务以应用新节点</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DNS Domains ── -->
+  <div id="tab-dns" style="display:none">
+    <div class="card">
+      <h3>直连 DNS 服务器</h3>
+      <div style="font-size:11px;color:#888;margin-bottom:10px;">
+        以下域名列表中的域名将使用此 DNS 服务器直接解析，不经过 Vex 代理 DNS
+      </div>
+      <div class="row">
+        <input type="text" id="dns-server-val" placeholder="114.114.114.114" style="max-width:200px;">
+        <button class="btn btn-primary btn-sm" onclick="saveDirectServer()">保存</button>
+        <span style="font-size:11px;color:#aaa;">常用：114.114.114.114 | 119.29.29.29 | 223.5.5.5</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>直连域名列表</h3>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">
+        这些域名使用直连 DNS 解析（不走代理 DNS），适用于国内常用域名，可提高解析速度
+      </div>
+      <div id="domain-list"><div style="color:#999;padding:6px 0;">加载中...</div></div>
+      <hr class="divider">
+      <div class="row">
+        <input type="text" id="add-domain" placeholder="example.com" style="max-width:280px;"
+               onkeydown="if(event.key==='Enter')addDirectDomain()">
+        <button class="btn btn-success btn-sm" onclick="addDirectDomain()">添加域名</button>
+        <button class="btn btn-primary btn-sm" onclick="loadDirectDomains()">刷新</button>
+      </div>
+      <div style="font-size:11px;color:#aaa;margin-top:8px;">
+        提示：修改后重启 Vex 服务以使 dnsmasq 配置生效
       </div>
     </div>
   </div>
