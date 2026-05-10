@@ -100,6 +100,22 @@ jobs:
         run: |
           brew install pkg-config
 
+      # ── Windows: locate fxc.exe for GPUI HLSL shader compilation ───────────
+      - name: Set GPUI_FXC_PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "fxc.exe" |
+            Where-Object { $_.FullName -match "x64" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $fxc) {
+            Write-Error "fxc.exe not found in Windows Kits"
+            exit 1
+          }
+          echo "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+          Write-Host "Found fxc.exe: $($fxc.FullName)"
+
       # ── Build release binaries ─────────────────────────────────────────────
       - name: Build release (CLI)
         run: cargo build --package vex-cli --release --target ${{ matrix.target }}
