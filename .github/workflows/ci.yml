@@ -117,7 +117,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/debug/vex-gui.exe dist/vex-gui_${{ matrix.target }}.exe
+          cp target/${{ matrix.target }}/debug/vex.exe dist/vex-gui_${{ matrix.target }}.exe
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
