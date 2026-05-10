@@ -186,6 +186,15 @@ fn main() {
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         cleanup_on_exit();
+        // Write crash log to %APPDATA%\vex\crash.log for diagnosis
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let log_path = std::path::PathBuf::from(appdata).join("vex").join("crash.log");
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let msg = format!("{}\n", info);
+            let _ = std::fs::write(&log_path, &msg);
+        }
         default_panic(info);
     }));
 
