@@ -22,9 +22,13 @@ echo ""
 ACTION=$(echo "$QUERY_STRING" | grep -o 'action=[^&]*' | cut -d= -f2)
 [ -z "$ACTION" ] && ACTION=$(echo "$REQUEST_URI" | grep -o 'action=[^&]*' | cut -d= -f2)
 
-# Read POST body if needed
+# Read POST body if needed (BusyBox-compatible: use CONTENT_LENGTH with dd)
 if [ "$REQUEST_METHOD" = "POST" ]; then
-    read -r POST_DATA
+    if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null; then
+        POST_DATA=$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)
+    else
+        POST_DATA=$(cat)
+    fi
 fi
 
 is_running() {
