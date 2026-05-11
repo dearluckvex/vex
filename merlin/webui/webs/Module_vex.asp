@@ -215,22 +215,34 @@ function delNode(idx) {
     });
 }
 
+function onProtoChange() {
+    var proto = document.getElementById('an-proto').value;
+    var isTuic = (proto === 'tuic');
+    document.getElementById('an-uuid-row').style.display = isTuic ? '' : 'none';
+    document.getElementById('an-pass-label').textContent  = isTuic ? 'TUIC 密码' : '密码 / UUID';
+}
+
 function addNode() {
     var name   = document.getElementById('an-name').value.trim();
     var proto  = document.getElementById('an-proto').value;
     var server = document.getElementById('an-server').value.trim();
     var port   = parseInt(document.getElementById('an-port').value, 10);
     var pass   = document.getElementById('an-pass').value.trim();
+    var uuid   = document.getElementById('an-uuid').value.trim();
     if (!name)            { showMsg('请填写节点名称', 'err'); return; }
     if (!server)          { showMsg('请填写服务器地址', 'err'); return; }
     if (!port || port<1)  { showMsg('请填写有效端口', 'err'); return; }
-    api('add_node', {name:name, protocol:proto, server:server, port:port, password:pass}, function(r) {
+    if (proto === 'tuic' && !uuid) { showMsg('TUIC 需要填写 UUID', 'err'); return; }
+    var payload = {name:name, protocol:proto, server:server, port:port, password:pass};
+    if (proto === 'tuic') payload.uuid = uuid;
+    api('add_node', payload, function(r) {
         showMsg(r.msg || (r.ok ? '节点已添加' : '添加失败'), r.ok ? 'ok' : 'err');
         if (r.ok) {
             document.getElementById('an-name').value = '';
             document.getElementById('an-server').value = '';
             document.getElementById('an-port').value = '';
             document.getElementById('an-pass').value = '';
+            document.getElementById('an-uuid').value = '';
             loadNodes(); refreshStatus();
         }
     });
@@ -527,16 +539,24 @@ window.onload = function() {
       <div style="display:grid;grid-template-columns:160px 1fr auto;gap:8px;align-items:end;">
         <div>
           <div class="form-label">协议</div>
-          <select id="an-proto">
+          <select id="an-proto" onchange="onProtoChange()">
             <option value="shadowsocks">Shadowsocks</option>
             <option value="vmess">VMess</option>
             <option value="trojan">Trojan</option>
             <option value="vless">VLESS</option>
             <option value="hysteria2">Hysteria2</option>
+            <option value="tuic">TUIC</option>
           </select>
         </div>
-        <div><div class="form-label">密码 / UUID</div><input type="text" id="an-pass" placeholder="password or UUID"></div>
+        <div>
+          <div class="form-label" id="an-pass-label">密码 / UUID</div>
+          <input type="text" id="an-pass" placeholder="password or UUID">
+        </div>
         <div><button class="btn btn-success" onclick="addNode()">添加节点</button></div>
+      </div>
+      <div id="an-uuid-row" style="display:none;margin-top:8px;">
+        <div class="form-label">UUID（TUIC）</div>
+        <input type="text" id="an-uuid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="width:100%;">
       </div>
       <div style="font-size:11px;color:#aaa;margin-top:7px;">提示：高级选项（加密方式、TLS 等）请在"配置"标签页中直接编辑 YAML</div>
     </div>

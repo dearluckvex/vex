@@ -461,15 +461,41 @@ case "$ACTION" in
         SERVER=$(printf '%s' "$POST_DATA" | awk -F'"server":"'  'NF>1{split($2,a,"\"");print a[1];exit}')
         PORT=$(printf '%s' "$POST_DATA" | grep -o '"port":[0-9]*' | grep -o '[0-9]*' | head -1)
         PASS=$(printf '%s' "$POST_DATA" | awk -F'"password":"' 'NF>1{split($2,a,"\"");print a[1];exit}')
+        UUID=$(printf '%s' "$POST_DATA" | awk -F'"uuid":"'     'NF>1{split($2,a,"\"");print a[1];exit}')
         if [ -z "$NAME" ] || [ -z "$SERVER" ] || [ -z "$PORT" ]; then
             echo '{"ok":false,"msg":"名称、服务器地址、端口不能为空"}'
         else
             case "$PROTO" in
-                shadowsocks|ss|vmess|trojan|vless|hysteria2|hy2) ;;
+                shadowsocks|ss|vmess|trojan|vless|hysteria2|hy2|tuic) ;;
                 *) PROTO="shadowsocks" ;;
             esac
             tmp="$VEX_CONF.tmp.$$"
-            awk -v n="$NAME" -v p="$PROTO" -v s="$SERVER" -v port="$PORT" -v pw="$PASS" '
+            if [ "$PROTO" = "tuic" ]; then
+                awk -v n="$NAME" -v s="$SERVER" -v port="$PORT" -v pw="$PASS" -v uid="$UUID" '
+                    BEGIN { in_n=0; done=0 }
+                    /^nodes:[[:space:]]*\[\]/ {
+                        print "nodes:"
+                        printf "  - name: \"%s\"\n    protocol: tuic\n    server: \"%s\"\n    port: %s\n    uuid: \"%s\"\n    password: \"%s\"\n", n, s, port, uid, pw
+                        done=1; next
+                    }
+                    /^nodes:/ { in_n=1; print; next }
+                    in_n && /^[a-zA-Z_]/ {
+                        if (!done) {
+                            printf "  - name: \"%s\"\n    protocol: tuic\n    server: \"%s\"\n    port: %s\n    uuid: \"%s\"\n    password: \"%s\"\n", n, s, port, uid, pw
+                            done=1
+                        }
+                        in_n=0
+                    }
+                    { print }
+                    END {
+                        if (!done) {
+                            print "\nnodes:"
+                            printf "  - name: \"%s\"\n    protocol: tuic\n    server: \"%s\"\n    port: %s\n    uuid: \"%s\"\n    password: \"%s\"\n", n, s, port, uid, pw
+                        }
+                    }
+                ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            else
+                awk -v n="$NAME" -v p="$PROTO" -v s="$SERVER" -v port="$PORT" -v pw="$PASS" '
                 BEGIN { in_n=0; done=0; buf="" }
                 /^nodes:[[:space:]]*\[\]/ {
                     print "nodes:"
@@ -492,6 +518,7 @@ case "$ACTION" in
                     }
                 }
             ' "$VEX_CONF" > "$tmp" && mv "$tmp" "$VEX_CONF"
+            fi
             printf '{"ok":true,"msg":"节点已添加: %s"}' "$(json_str "$NAME")"
         fi
         ;;
