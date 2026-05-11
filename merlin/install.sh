@@ -161,8 +161,13 @@ install_common_files() {
     ok "Control scripts installed"
 
     info "Installing CGI backend..."
-    cp "$SCRIPT_DIR/cgi-bin/vex.cgi" "$CGI_BIN/vex.cgi"
-    chmod +x "$CGI_BIN/vex.cgi"
+    # Store CGI in JFFS (persistent), symlink into /www/cgi-bin/ (tmpfs on most routers)
+    cp "$SCRIPT_DIR/cgi-bin/vex.cgi" "$VEX_DIR/vex.cgi"
+    chmod +x "$VEX_DIR/vex.cgi"
+    mkdir -p "$CGI_BIN"
+    ln -sf "$VEX_DIR/vex.cgi" "$CGI_BIN/vex.cgi" 2>/dev/null || \
+        cp "$VEX_DIR/vex.cgi" "$CGI_BIN/vex.cgi" 2>/dev/null || \
+        warn "Could not install CGI to $CGI_BIN — will retry on next start"
     ok "CGI backend installed"
 
     if [ ! -f "$VEX_CONF" ]; then
@@ -290,7 +295,7 @@ EOF
     [ -x "$VEX_SCRIPTS/vex.sh" ]      || { warn "vex.sh not executable";       errors=$((errors+1)); }
     [ -x "$VEX_SCRIPTS/iptables.sh" ] || { warn "iptables.sh not executable";  errors=$((errors+1)); }
     [ -f "$WWW_VEX/vex.asp" ]         || { warn "Web UI page missing";         errors=$((errors+1)); }
-    [ -x "$CGI_BIN/vex.cgi" ]         || { warn "CGI script not executable";   errors=$((errors+1)); }
+    [ -x "$VEX_DIR/vex.cgi" ]         || { warn "CGI script not executable";   errors=$((errors+1)); }
     [ "$errors" -eq 0 ] && ok "All files installed correctly" \
                          || warn "$errors validation warning(s) — check output above"
 

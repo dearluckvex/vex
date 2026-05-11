@@ -115,6 +115,14 @@ do_start() {
     [ -x "$VEX_BIN" ]  || { err "Binary not found: $VEX_BIN"; return 1; }
     [ -f "$VEX_CONF" ] || { err "Config not found: $VEX_CONF"; return 1; }
 
+    # Restore CGI symlink (tmpfs /www/cgi-bin loses files on reboot)
+    local cgi_src="$VEX_DIR/vex.cgi"
+    local cgi_dst="/www/cgi-bin/vex.cgi"
+    if [ -f "$cgi_src" ] && [ ! -e "$cgi_dst" ]; then
+        mkdir -p "/www/cgi-bin"
+        ln -sf "$cgi_src" "$cgi_dst" 2>/dev/null || cp "$cgi_src" "$cgi_dst" 2>/dev/null || true
+    fi
+
     rotate_log
     info "Starting Vex..."
 
