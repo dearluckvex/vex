@@ -292,42 +292,49 @@ jobs:
 
       - name: Assemble Merlin plugin package
         run: |
-          PKG_NAME="vex-merlin-${{ matrix.arch }}"
-          PKG_DIR="$PKG_NAME"
-
-          # Directory layout mirrors the installer's expectations
-          mkdir -p "$PKG_DIR/bin"
-          mkdir -p "$PKG_DIR/scripts"
-          mkdir -p "$PKG_DIR/webui/cgi-bin"
-          mkdir -p "$PKG_DIR/webui/pages"
+          ARCH="${{ matrix.arch }}"
+          # koolcenter reads the ROOT DIRECTORY NAME from the tar as the module name,
+          # then checks {module}/webs/Module_{module}.asp.
+          # Root dir must be "vex" → module = "vex" → webs/Module_vex.asp ✓
+          # The release asset is named vex-merlin-{arch}.tar.gz for user convenience
+          # (the filename itself is irrelevant to koolcenter).
+          PKG="vex"
+          TARBALL="vex-merlin-${ARCH}.tar.gz"
+          mkdir -p "$PKG/bin" "$PKG/webs" "$PKG/scripts" "$PKG/cgi-bin"
 
           # Binary
           cp "target/${{ matrix.target }}/release/vex-cli" \
-             "$PKG_DIR/bin/vex-cli-${{ matrix.arch }}"
-          chmod +x "$PKG_DIR/bin/vex-cli-${{ matrix.arch }}"
+             "$PKG/bin/vex-cli-${ARCH}"
+          chmod +x "$PKG/bin/vex-cli-${ARCH}"
 
-          # Plugin files
-          cp merlin/install.sh        "$PKG_DIR/"
-          cp merlin/uninstall.sh      "$PKG_DIR/"
-          cp merlin/config.yaml.template "$PKG_DIR/"
-          cp merlin/scripts/vex.sh       "$PKG_DIR/scripts/"
-          cp merlin/scripts/iptables.sh  "$PKG_DIR/scripts/"
-          cp merlin/scripts/dnsmasq.conf "$PKG_DIR/scripts/"
-          cp merlin/webui/cgi-bin/vex.cgi   "$PKG_DIR/webui/cgi-bin/"
-          cp merlin/webui/pages/vex.asp     "$PKG_DIR/webui/pages/"
+          # Metadata
+          cp merlin/install.sh merlin/uninstall.sh merlin/config.yaml.template \
+             merlin/version "$PKG/"
+          # .valid — platform string for koolcenter pre-validation
+          if [ "$ARCH" = "aarch64" ]; then echo "hnd"; else echo "arm"; fi > "$PKG/.valid"
 
-          chmod +x "$PKG_DIR/install.sh" \
-                   "$PKG_DIR/uninstall.sh" \
-                   "$PKG_DIR/scripts/vex.sh" \
-                   "$PKG_DIR/scripts/iptables.sh" \
-                   "$PKG_DIR/webui/cgi-bin/vex.cgi"
+          # Scripts
+          cp merlin/scripts/vex.sh merlin/scripts/iptables.sh \
+             merlin/scripts/dnsmasq.conf "$PKG/scripts/"
 
-          # Create tarball
-          tar -czf "${PKG_NAME}.tar.gz" "$PKG_DIR"
-          echo "Package: $(du -sh ${PKG_NAME}.tar.gz | cut -f1)  ${PKG_NAME}.tar.gz"
+          # Web UI (koolcenter: webs/Module_{module}.asp; module = "vex")
+          cp merlin/webui/webs/Module_vex.asp "$PKG/webs/Module_vex.asp"
+
+          # CGI backend
+          cp merlin/webui/cgi-bin/vex.cgi "$PKG/cgi-bin/vex.cgi"
+
+          chmod +x "$PKG/install.sh" \
+                   "$PKG/uninstall.sh" \
+                   "$PKG/scripts/vex.sh" \
+                   "$PKG/scripts/iptables.sh" \
+                   "$PKG/cgi-bin/vex.cgi"
+
+          # Rooted tar: koolcenter extracts "vex/" as module = "vex"
+          tar -czf "$TARBALL" "$PKG"
+          echo "Package: $(du -sh $TARBALL | cut -f1)  $TARBALL"
 
           # Expose standalone binary for install.sh --online mode
-          cp "$PKG_DIR/bin/vex-cli-${{ matrix.arch }}" "vex-cli-linux-${{ matrix.arch }}"
+          cp "$PKG/bin/vex-cli-${ARCH}" "vex-cli-linux-${ARCH}"
 
       - name: Upload Merlin package and binary to release
         uses: softprops/action-gh-release@v2
