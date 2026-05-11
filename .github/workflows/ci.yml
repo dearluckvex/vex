@@ -209,35 +209,35 @@ jobs:
       - name: Package Merlin plugin
         run: |
           ARCH="${{ matrix.arch }}"
-          # koolcenter derives module name from the UPLOADED FILENAME (without .tar.gz).
-          # The installer then looks for webs/Module_{module_name}.asp inside.
-          # To get module = "vex" and match webs/Module_vex.asp, the user must upload
-          # a file named "vex.tar.gz". We produce a FLAT tar (no root directory) so the
-          # contents land directly at /tmp/vex/ when koolcenter extracts it.
-          STAGING="vex_staging_${ARCH}"
-          TARBALL="vex.tar.gz"   # user uploads this; koolcenter module name = "vex"
-          mkdir -p "$STAGING/bin" "$STAGING/webs" "$STAGING/scripts" "$STAGING/cgi-bin"
+          # koolcenter extracts the tar and uses the SINGLE ROOT DIRECTORY NAME as the
+          # module name, then checks for webs/Module_{module}.asp inside that directory.
+          # Root dir must be "vex" → module = "vex" → webs/Module_vex.asp ✓
+          # The tar filename is irrelevant to koolcenter; we name it "vex.tar.gz"
+          # so the artifact file is ready to upload without renaming.
+          PKG="vex"
+          TARBALL="vex.tar.gz"
+          mkdir -p "$PKG/bin" "$PKG/webs" "$PKG/scripts" "$PKG/cgi-bin"
           # Binary — arch-specific name so install.sh can auto-detect
-          cp "target/${{ matrix.target }}/release/vex-cli" "$STAGING/bin/vex-cli-${ARCH}"
-          chmod +x "$STAGING/bin/vex-cli-${ARCH}"
+          cp "target/${{ matrix.target }}/release/vex-cli" "$PKG/bin/vex-cli-${ARCH}"
+          chmod +x "$PKG/bin/vex-cli-${ARCH}"
           # Top-level metadata
           cp merlin/install.sh merlin/uninstall.sh merlin/config.yaml.template \
-             merlin/version "$STAGING/"
+             merlin/version "$PKG/"
           # .valid — platform string for koolcenter pre-validation
-          if [ "$ARCH" = "aarch64" ]; then echo "hnd"; else echo "arm"; fi > "$STAGING/.valid"
+          if [ "$ARCH" = "aarch64" ]; then echo "hnd"; else echo "arm"; fi > "$PKG/.valid"
           # Scripts
           cp merlin/scripts/vex.sh merlin/scripts/iptables.sh \
-             merlin/scripts/dnsmasq.conf "$STAGING/scripts/"
-          # Web UI (koolcenter checks for webs/Module_{module}.asp; module = "vex")
-          cp merlin/webui/webs/Module_vex.asp "$STAGING/webs/Module_vex.asp"
+             merlin/scripts/dnsmasq.conf "$PKG/scripts/"
+          # Web UI: koolcenter checks webs/Module_{module}.asp; module = "vex"
+          cp merlin/webui/webs/Module_vex.asp "$PKG/webs/Module_vex.asp"
           # CGI backend
-          cp merlin/webui/cgi-bin/vex.cgi "$STAGING/cgi-bin/vex.cgi"
+          cp merlin/webui/cgi-bin/vex.cgi "$PKG/cgi-bin/vex.cgi"
           # Permissions
-          chmod +x "$STAGING/install.sh" "$STAGING/uninstall.sh" \
-                   "$STAGING/scripts/vex.sh" "$STAGING/scripts/iptables.sh" \
-                   "$STAGING/cgi-bin/vex.cgi"
-          # Flat tar: no root directory — koolcenter extracts to /tmp/vex/ directly
-          tar -czf "$TARBALL" -C "$STAGING" .
+          chmod +x "$PKG/install.sh" "$PKG/uninstall.sh" \
+                   "$PKG/scripts/vex.sh" "$PKG/scripts/iptables.sh" \
+                   "$PKG/cgi-bin/vex.cgi"
+          # Rooted tar: koolcenter extracts "vex/" → module = "vex"
+          tar -czf "$TARBALL" "$PKG"
 
       - name: Upload Merlin plugin artifact
         uses: actions/upload-artifact@v4
